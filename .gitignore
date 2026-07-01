@@ -22,16 +22,14 @@ out/
 # Logs
 *.log
 
-# Python cache (if present)
+# Temporary files
+*.tmp
+
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
-# Temporary files
-*.tmp
-.DS_Store
-Thumbs.db
 
 # Coverage reports
 coverage/
@@ -39,13 +37,15 @@ htmlcov/
 .coverage
 
 # Testing
-.mypy_cache/
 .pytest_cache/
-.nyc_output/
-coverage/lcov.info
+.mypy_cache/
 
 # Distribution / packaging
 *.tar.gz
 *.whl
 *.egg-info/
+
+# OS generated files
+.DS_Store
+Thumbs.db
 ```
