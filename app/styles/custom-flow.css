@@ -1,0 +1,99 @@
+
+/* Píldora de cardinalidad ("1", "0..1", "*") junto a cada tabla,
+   estilo dbdiagram.io */
+.cardinality-badge {
+  position: absolute;
+  background: white;
+  border: 1.5px solid currentColor;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-weight: 700;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+  transition: opacity 0.25s ease, border-color 0.2s, color 0.2s;
+  z-index: 5;
+}
+
+/* Contenedor flotante para la etiqueta horizontal */
+.custom-edge-label-renderer {
+  position: absolute;
+  pointer-events: none;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  will-change: transform;
+}
+
+/* Estilos de la etiqueta horizontal por defecto (al pasar el mouse) */
+.horizontal-edge-label {
+  background: white;
+  color: #1e1b4b;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-weight: 700;
+  font-size: 11px;
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.2);
+  border: 1px solid #e0e7ff;
+  white-space: nowrap;
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateY(5px);
+  animation: labelAppear 0.2s ease-out forwards;
+}
+
+/* Estilos de la etiqueta horizontal cuando está en modo ENFOCADO/CLICK (Verde) */
+.horizontal-edge-label.active-green {
+  background: #f0fdf4;
+  color: #14532d;
+  border-color: #bbf7d0;
+  box-shadow: 0 4px 14px rgba(22, 163, 74, 0.25);
+}
+
+@keyframes labelAppear {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Efecto de atenuación para los elementos que NO están seleccionados */
+.edge-dimmed {
+  opacity: 0.12 !important;
+  transition: opacity 0.25s ease;
+}
+
+.node-dimmed {
+  opacity: 0.35 !important;
+  transition: opacity 0.25s ease;
+}
+
+/* MODO SELECCIÓN DE TEXTO (Activado con Ctrl/Cmd) */
+.text-select-mode .react-flow__pane,
+.text-select-mode .react-flow__node {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  cursor: text !important;
+}
+
+/* Forzar que todo el contenido dentro de los nodos sea seleccionable y visible */
+.text-select-mode .react-flow__node * {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  pointer-events: auto !important;
+}
+
+/* Resaltado visual de la selección (el color azul/índigo típico al copiar) */
+.text-select-mode ::selection {
+  background: #a5b4fc !important;
+  color: #1e1b4b !important;
+}
+.text-select-mode ::-moz-selection {
+  background: #a5b4fc !important;
+  color: #1e1b4b !important;
+}

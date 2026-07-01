@@ -1,0 +1,92 @@
+/* [project]/app/styles/custom-flow.css [app-client] (css) */
+.cardinality-badge {
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+  background: #fff;
+  border: 1.5px solid;
+  border-radius: 999px;
+  padding: 3px 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  transition: opacity .25s, border-color .2s, color .2s;
+  position: absolute;
+  box-shadow: 0 1px 4px #0f172a1f;
+}
+
+.custom-edge-label-renderer {
+  pointer-events: none;
+  z-index: 10;
+  will-change: transform;
+  justify-content: center;
+  align-items: center;
+  display: flex;
+  position: absolute;
+}
+
+.horizontal-edge-label {
+  color: #1e1b4b;
+  white-space: nowrap;
+  pointer-events: auto;
+  opacity: 0;
+  background: #fff;
+  border: 1px solid #e0e7ff;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  animation: .2s ease-out forwards labelAppear;
+  transform: translateY(5px);
+  box-shadow: 0 4px 12px #4f46e533;
+}
+
+.horizontal-edge-label.active-green {
+  color: #14532d;
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  box-shadow: 0 4px 14px #16a34a40;
+}
+
+@keyframes labelAppear {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.edge-dimmed {
+  transition: opacity .25s;
+  opacity: .12 !important;
+}
+
+.node-dimmed {
+  transition: opacity .25s;
+  opacity: .35 !important;
+}
+
+.text-select-mode .react-flow__pane, .text-select-mode .react-flow__node {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  cursor: text !important;
+}
+
+.text-select-mode .react-flow__node * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  pointer-events: auto !important;
+}
+
+.text-select-mode ::selection {
+  color: #1e1b4b !important;
+  background: #a5b4fc !important;
+}
+
+.text-select-mode ::selection {
+  color: #1e1b4b !important;
+  background: #a5b4fc !important;
+}
+
+/*# sourceMappingURL=app_styles_custom-flow_css_1igg3k2._.single.css.map*/

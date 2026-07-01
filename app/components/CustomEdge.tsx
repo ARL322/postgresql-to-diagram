@@ -1,0 +1,225 @@
+"use client";
+import React, { useState } from 'react';
+import { EdgeProps, getBezierPath, getSmoothStepPath, EdgeLabelRenderer, Position } from 'reactflow';
+//
+export default function CustomEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  style = {},
+  label,
+  data,
+  animated = false,
+}: EdgeProps) {
+  const [isHovered, setIsHovered] = useState(false);
+
+  // Extraemos las propiedades de control enviadas desde page.tsx
+  const isFocused = data?.isFocused ?? false;
+  const isDimmed = data?.isDimmed ?? false;
+  const useStepLine = data?.styleType === 'step';
+  const edgeOffset = data?.offset ?? 0;
+  const cardinalityLabels: { source: string; target: string } =
+    data?.cardinalityLabels ?? { source: '*', target: '1' };
+
+  // NUEVO: Offsets verticales para evitar superposición de badges
+  const sourceBadgeOffsetY = data?.sourceBadgeOffsetY ?? 0;
+  const targetBadgeOffsetY = data?.targetBadgeOffsetY ?? 0;
+
+  // Decidir el algoritmo geométrico de la línea
+  const [edgePath, labelX, labelY] = useStepLine
+    ? getSmoothStepPath({
+        sourceX,
+        sourceY,
+        sourcePosition,
+        targetX,
+        targetY,
+        targetPosition,
+        borderRadius: 12,
+        offset: 35 + edgeOffset,
+      })
+    : getBezierPath({
+        sourceX,
+        sourceY,
+        sourcePosition,
+        targetX,
+        targetY,
+        targetPosition,
+      });
+
+  // ¿La curva va de derecha a izquierda? Si seguimos ese mismo trazado para
+  // el texto, los glifos quedarían boca abajo/espejados (textPath sigue la
+  // dirección del path). Para evitarlo, cuando esto pasa generamos un
+  // segundo path -solo para el texto-, con la misma forma pero recorrido en
+  // sentido inverso (izquierda -> derecha), así el texto siempre se lee bien.
+  const isPathRightToLeft = sourceX > targetX;
+  const [textPath] = isPathRightToLeft
+    ? (useStepLine
+        ? getSmoothStepPath({
+            sourceX: targetX,
+            sourceY: targetY,
+            sourcePosition: targetPosition,
+            targetX: sourceX,
+            targetY: sourceY,
+            targetPosition: sourcePosition,
+            borderRadius: 12,
+            offset: 35 + edgeOffset,
+          })
+        : getBezierPath({
+            sourceX: targetX,
+            sourceY: targetY,
+            sourcePosition: targetPosition,
+            targetX: sourceX,
+            targetY: sourceY,
+            targetPosition: sourcePosition,
+          }))
+    : [edgePath];
+
+  // Definición de colores y grosores según el estado interactivo
+  let strokeColor = style.stroke || '#4f46e5';
+  let strokeWidth = 2;
+  let dotColor = '#4f46e5';
+
+  if (isFocused) {
+    strokeColor = '#16a34a';
+    dotColor = '#16a34a';
+    strokeWidth = 3.5;
+  } else if (isHovered) {
+    strokeColor = '#4338ca';
+    dotColor = '#4338ca';
+    strokeWidth = 3;
+  }
+
+  // Clases CSS dinámicas
+  const edgeClassName = `react-flow__edge-path ${isDimmed ? 'edge-dimmed' : ''}`;
+
+  // Mostrar el texto flotante horizontal si está en hover o si la tabla padre está seleccionada
+  const showHorizontalLabel = isHovered || isFocused;
+
+  // Solo animar si está habilitado y no está atenuado
+  const shouldAnimate = animated && !isDimmed;
+
+  // Posición de las píldoras de cardinalidad: pegadas a cada tabla,
+  // desplazadas hacia afuera del nodo (mismo criterio L/R que el resto
+  // del componente) y un poco hacia arriba de la línea para no taparla.
+  // NUEVO: se aplica el offset vertical (badgeOffsetY) para evitar
+  // superposición cuando múltiples líneas convergen en el mismo handle.
+  const sourceBadgeDir = sourcePosition === Position.Left ? -1 : 1;
+  const targetBadgeDir = targetPosition === Position.Left ? -1 : 1;
+  const badgeDistance = 22;
+
+  const sourceBadgeX = sourceX + sourceBadgeDir * badgeDistance;
+  const targetBadgeX = targetX + targetBadgeDir * badgeDistance;
+
+  return (
+    <>
+      {/* Línea visible de la arista */}
+      <path
+        id={id}
+        className={edgeClassName}
+        d={edgePath}
+        style={{
+          ...style,
+          stroke: strokeColor,
+          strokeWidth: strokeWidth,
+          fill: 'none',
+          transition: 'stroke 0.2s, stroke-width 0.2s, opacity 0.2s',
+          cursor: 'pointer',
+        }}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+      />
+
+      {/* Píldoras de Cardinalidad (estilo dbdiagram.io), siempre visibles */}
+      <EdgeLabelRenderer>
+        <div
+          className="cardinality-badge"
+          style={{
+            transform: `translate(-50%, -50%) translate(${sourceBadgeX}px, ${sourceY - 9 + sourceBadgeOffsetY}px)`,
+            borderColor: strokeColor,
+            color: strokeColor,
+            opacity: isDimmed ? 0.12 : 1,
+          }}
+        >
+          {cardinalityLabels.source}
+        </div>
+        <div
+          className="cardinality-badge"
+          style={{
+            transform: `translate(-50%, -50%) translate(${targetBadgeX}px, ${targetY - 9 + targetBadgeOffsetY}px)`,
+            borderColor: strokeColor,
+            color: strokeColor,
+            opacity: isDimmed ? 0.12 : 1,
+          }}
+        >
+          {cardinalityLabels.target}
+        </div>
+      </EdgeLabelRenderer>
+
+      {/* Path invisible más ancho para interactuar cómodamente con el mouse */}
+      <path
+        d={edgePath}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={15}
+        style={{ cursor: 'pointer' }}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+      />
+
+      {/* Círculo animado que viaja a lo largo del path */}
+      {shouldAnimate && (
+        <circle r="5" fill={dotColor} opacity="0.9">
+          <animateMotion
+            dur="2s"
+            repeatCount="indefinite"
+            path={edgePath}
+          />
+        </circle>
+      )}
+
+      {label && !isDimmed && (
+        <>
+          {/* MODO TEXTO HORIZONTAL (Activo en Hover común OR en Selección Verde) */}
+          {showHorizontalLabel && (
+            <EdgeLabelRenderer>
+              <div
+                className="custom-edge-label-renderer"
+                style={{
+                  transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+                }}
+              >
+                <div className={`horizontal-edge-label ${isFocused ? 'active-green' : ''}`}>
+                  {label.toString()}
+                </div>
+              </div>
+            </EdgeLabelRenderer>
+          )}
+
+          {/* MODO NORMAL: Texto curvo que sigue la línea */}
+          {!showHorizontalLabel && (
+            <EdgeLabelRenderer>
+              <div className="absolute inset-0 pointer-events-none overflow-visible">
+                <svg className="w-full h-full overflow-visible absolute inset-0">
+                  <path id={`path-${id}`} d={textPath} fill="none" className="pointer-events-none" />
+                  <text dy="-6" className="select-none font-mono font-bold text-[10px] fill-indigo-950/80">
+                    <textPath
+                      href={`#path-${id}`}
+                      startOffset="50%"
+                      textAnchor="middle"
+                    >
+                      {label.toString()}
+                    </textPath>
+                  </text>
+                </svg>
+              </div>
+            </EdgeLabelRenderer>
+          )}
+        </>
+      )}
+    </>
+  );
+}
