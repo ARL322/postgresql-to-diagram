@@ -11,7 +11,6 @@ import CustomEdge from './components/CustomEdge';
 import { parsePostgresSQL, sanitizeId, buildHandleId } from './lib/sqlParser';
 import type { Table } from './lib/types';
 import { getLayoutedElements } from './lib/layout';
-import { useTheme } from 'next-themes';
 
 const nodeTypes = { tableNode: TableNode };
 const edgeTypes = { customEdge: CustomEdge };
@@ -396,8 +395,8 @@ ON UPDATE:
 */`;
 
 export default function Home() {
-  const { theme } = useTheme();
-  const isDark = theme === 'dark';
+  // const { theme } = useTheme();
+  const isDark = false; // Tema forzado a claro por ahora, next-themes no disponible
   const [sqlInput, setSqlInput] = useState(DEFAULT_SQL);
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
