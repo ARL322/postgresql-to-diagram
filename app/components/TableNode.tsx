@@ -29,7 +29,7 @@ export default function TableNode({ data }: NodeProps<TableNodeData>) {
       >
         <div className="flex items-center gap-2 min-w-0">
           <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
-          <span className="truncate text-xs tracking-wider font-mono font-bold text-slate-200 uppercase">{displayName}</span>
+          <span className="truncate text-xs tracking-wider font-mono font-bold text-slate-200">{displayName}</span>
         </div>
         {data.comment && (
           <span className="cursor-help text-[10px] bg-slate-800 text-slate-400 hover:text-white px-2 py-0.5 rounded font-mono transition-colors" title={data.comment}>
