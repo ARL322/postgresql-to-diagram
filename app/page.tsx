@@ -405,6 +405,15 @@ export default function Home() {
   const [isTextSelectionMode, setIsTextSelectionMode] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
+  // Efecto para aplicar la clase 'dark' al elemento html
+  useEffect(() => {
+    if (isDark) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [isDark]);
+
   const handleGenerate = useCallback(() => {
     setError(null);
     setSelectedTableId(null);
