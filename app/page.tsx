@@ -11,6 +11,7 @@ import CustomEdge from './components/CustomEdge';
 import { parsePostgresSQL, sanitizeId, buildHandleId } from './lib/sqlParser';
 import type { Table } from './lib/types';
 import { getLayoutedElements } from './lib/layout';
+import { useTheme } from 'next-themes';
 
 const nodeTypes = { tableNode: TableNode };
 const edgeTypes = { customEdge: CustomEdge };
@@ -395,6 +396,8 @@ ON UPDATE:
 */`;
 
 export default function Home() {
+  const { theme } = useTheme();
+  const isDark = theme === 'dark';
   const [sqlInput, setSqlInput] = useState(DEFAULT_SQL);
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -638,25 +641,29 @@ export default function Home() {
   });
 
   return (
-    <main className="h-screen w-screen flex bg-slate-100 overflow-hidden text-slate-900 antialiased font-sans">
+    <main className={`h-screen w-screen flex overflow-hidden antialiased font-sans ${isDark ? 'bg-zinc-950 text-zinc-100' : 'bg-slate-100 text-slate-900'}`}>
       {/* Panel lateral izquierdo con animación */}
       <aside
-        className={`flex-shrink-0 flex flex-col gap-3.5 p-5 border-r border-slate-200 bg-white shadow-xl z-10 transition-all duration-300 ease-in-out ${
+        className={`flex-shrink-0 flex flex-col gap-3.5 p-5 border-r ${isDark ? 'border-zinc-800 bg-zinc-900' : 'border-slate-200 bg-white'} shadow-xl z-10 transition-all duration-300 ease-in-out ${
           isSidebarOpen ? 'w-[390px] opacity-100' : 'w-0 opacity-0 overflow-hidden border-r-0'
         }`}
       >
-        <div className="pb-1 border-b border-slate-100">
-          <h1 className="text-lg font-bold tracking-tight text-slate-900 flex items-center gap-2">
+        <div className={`pb-1 border-b ${isDark ? 'border-zinc-800' : 'border-slate-100'}`}>
+          <h1 className={`text-lg font-bold tracking-tight ${isDark ? 'text-zinc-100' : 'text-slate-900'} flex items-center gap-2`}>
             <span className="text-2xl">📊</span>
             <span>Schema <span className="text-indigo-600">Visualizer</span></span>
           </h1>
-          <p className="text-xs text-slate-400 mt-0.5">
+          <p className={`text-xs ${isDark ? 'text-zinc-500' : 'text-slate-400'} mt-0.5`}>
             Ingresa tu código estructurado DDL de PostgreSQL
           </p>
         </div>
 
         <textarea
-          className="flex-1 p-3.5 border border-slate-200 rounded-xl font-mono text-[11px] leading-relaxed focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none resize-none bg-slate-50/50 text-slate-800 placeholder-slate-300 transition-colors"
+          className={`flex-1 p-3.5 border rounded-xl font-mono text-[11px] leading-relaxed focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none resize-none ${
+            isDark 
+              ? 'border-zinc-700 bg-zinc-800 text-zinc-100 placeholder-zinc-600' 
+              : 'border-slate-200 bg-slate-50/50 text-slate-800 placeholder-slate-300'
+          }`}
           value={sqlInput}
           onChange={(e) => setSqlInput(e.target.value)}
           placeholder="-- Pega tus sentencias CREATE TABLE e INDEX aquí..."
@@ -664,20 +671,32 @@ export default function Home() {
         />
 
         {error && (
-          <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-lg font-medium animate-pulse">
+          <div className={`p-3 border text-xs rounded-lg font-medium animate-pulse ${
+            isDark 
+              ? 'bg-rose-950/50 border-rose-900 text-rose-400' 
+              : 'bg-rose-50 border-rose-200 text-rose-700'
+          }`}>
             ⚠️ {error}
           </div>
         )}
 
         {stats && !error && (
-          <div className="grid grid-cols-3 gap-2 text-center text-[11px] border border-slate-100 rounded-xl p-2.5 bg-slate-50/50">
-            <div className="p-2.5 bg-white border border-slate-100 rounded-lg shadow-sm">
-              <span className="block text-base font-extrabold text-slate-950">{stats.tables}</span> tablas
+          <div className={`grid grid-cols-3 gap-2 text-center text-[11px] border rounded-xl p-2.5 ${
+            isDark ? 'border-zinc-800 bg-zinc-800/50' : 'border-slate-100 bg-slate-50/50'
+          }`}>
+            <div className={`p-2.5 border rounded-lg shadow-sm ${
+              isDark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-slate-100'
+            }`}>
+              <span className={`block text-base font-extrabold ${isDark ? 'text-zinc-100' : 'text-slate-950'}`}>{stats.tables}</span> tablas
             </div>
-            <div className="p-2.5 bg-white border border-slate-100 rounded-lg shadow-sm">
+            <div className={`p-2.5 border rounded-lg shadow-sm ${
+              isDark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-slate-100'
+            }`}>
               <span className="block text-base font-extrabold text-indigo-600">{stats.relations}</span> relaciones
             </div>
-            <div className="p-2.5 bg-white border border-slate-100 rounded-lg shadow-sm">
+            <div className={`p-2.5 border rounded-lg shadow-sm ${
+              isDark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-slate-100'
+            }`}>
               <span className="block text-base font-extrabold text-amber-600">{stats.indexes}</span> índices
             </div>
           </div>
@@ -690,15 +709,15 @@ export default function Home() {
           Generar Diagrama de Entidades
         </button>
 
-        <div className="text-[10px] text-slate-400 flex flex-col gap-2 border-t border-slate-100 pt-3.5">
-          <span className="font-semibold text-slate-500 uppercase tracking-wider text-[9px]">💡 Tips de Navegación</span>
-          <p className="text-slate-500 leading-normal">
+        <div className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-slate-400'} flex flex-col gap-2 border-t ${isDark ? 'border-zinc-800' : 'border-slate-100'} pt-3.5`}>
+          <span className={`font-semibold ${isDark ? 'text-zinc-400' : 'text-slate-500'} uppercase tracking-wider text-[9px]`}>💡 Tips de Navegación</span>
+          <p className={`${isDark ? 'text-zinc-400' : 'text-slate-500'} leading-normal`}>
             Haz <strong>clic sobre una tabla</strong> para resaltar sus relaciones. Las líneas mantendrán su estilo curvo original. Haz clic en el fondo para restaurar el esquema completo.
           </p>
-          <p className="text-slate-500 leading-normal">
-            <strong>Para copiar texto:</strong> Mantén presionada la tecla <kbd className="px-1.5 py-0.5 bg-slate-200 rounded text-[9px] font-mono">Ctrl</kbd> (o <kbd className="px-1.5 py-0.5 bg-slate-200 rounded text-[9px] font-mono">⌘ Cmd</kbd> en Mac) y el cursor cambiará a texto. Ahora puedes seleccionar y copiar normalmente.
+          <p className={`${isDark ? 'text-zinc-400' : 'text-slate-500'} leading-normal`}>
+            <strong>Para copiar texto:</strong> Mantén presionada la tecla <kbd className={`px-1.5 py-0.5 rounded text-[9px] font-mono ${isDark ? 'bg-zinc-700 text-zinc-200' : 'bg-slate-200 text-slate-700'}`}>Ctrl</kbd> (o <kbd className={`px-1.5 py-0.5 rounded text-[9px] font-mono ${isDark ? 'bg-zinc-700 text-zinc-200' : 'bg-slate-200 text-slate-700'}`}>⌘ Cmd</kbd> en Mac) y el cursor cambiará a texto. Ahora puedes seleccionar y copiar normalmente.
           </p>
-          <p className="text-slate-500 leading-normal">
+          <p className={`${isDark ? 'text-zinc-400' : 'text-slate-500'} leading-normal`}>
             <strong>🎯 Animación:</strong> Los círculos animados viajan a lo largo de las líneas mostrando la dirección de las relaciones Foreign Key, desde la tabla que tiene la FK hacia la tabla referenciada.
           </p>
         </div>
@@ -707,15 +726,17 @@ export default function Home() {
       {/* Botón toggle elegante para mostrar/ocultar el panel */}
       <button
         onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-        className={`absolute top-1/2 -translate-y-1/2 z-20 flex items-center justify-center w-8 h-16 bg-white border border-slate-200 shadow-lg hover:shadow-xl hover:bg-indigo-50 hover:border-indigo-300 transition-all duration-300 group ${
-          isSidebarOpen
-            ? 'left-[390px] -translate-x-1/2 rounded-r-xl border-l-0'
-            : 'left-0 rounded-r-xl'
+        className={`absolute top-1/2 -translate-y-1/2 z-20 flex items-center justify-center w-8 h-16 border shadow-lg hover:shadow-xl transition-all duration-300 group ${
+          isDark 
+            ? 'bg-zinc-900 border-zinc-700 hover:bg-zinc-800 hover:border-zinc-600' 
+            : 'bg-white border-slate-200 hover:bg-indigo-50 hover:border-indigo-300'
+        } ${
+          isSidebarOpen ? 'left-[390px] -translate-x-1/2 rounded-r-xl border-l-0' : 'left-0 rounded-r-xl'
         }`}
         title={isSidebarOpen ? 'Ocultar panel lateral' : 'Mostrar panel lateral'}
       >
         <svg
-          className={`w-4 h-4 text-slate-500 group-hover:text-indigo-600 transition-all duration-300 ${
+          className={`w-4 h-4 ${isDark ? 'text-zinc-500 group-hover:text-indigo-400' : 'text-slate-500 group-hover:text-indigo-600'} transition-all duration-300 ${
             isSidebarOpen ? 'rotate-180' : 'rotate-0'
           }`}
           fill="none"
@@ -745,28 +766,28 @@ export default function Home() {
             onPaneClick={onPaneClick}
             fitView
             fitViewOptions={{ padding: 0.2 }}
-            className="bg-slate-50"
+            className={isDark ? 'bg-zinc-950' : 'bg-slate-50'}
             proOptions={{ hideAttribution: true }}
             panOnDrag={!isTextSelectionMode}
             nodesDraggable={!isTextSelectionMode}
             nodesConnectable={!isTextSelectionMode}
             selectionMode={isTextSelectionMode ? SelectionMode.Full : SelectionMode.Partial}
           >
-            <Background color="#94a3b8" gap={20} size={1} style={{ opacity: 0.3 }} />
-            <Controls className="!bg-white !shadow-xl !border-slate-100 !rounded-xl !p-1" />
+            <Background color={isDark ? '#3f3f46' : '#94a3b8'} gap={20} size={1} style={{ opacity: 0.3 }} />
+            <Controls className={isDark ? '!bg-zinc-900 !shadow-xl !border-zinc-700 !rounded-xl !p-1 !text-zinc-100' : '!bg-white !shadow-xl !border-slate-100 !rounded-xl !p-1'} />
             <MiniMap
-              className="!bg-white !shadow-xl !border-slate-100 !rounded-xl !overflow-hidden"
-              nodeColor="#e0e7ff"
-              nodeStrokeColor="#a5b4fc"
-              maskColor="rgba(15, 23, 42, 0.03)"
+              className={isDark ? '!bg-zinc-900 !shadow-xl !border-zinc-700 !rounded-xl !overflow-hidden' : '!bg-white !shadow-xl !border-slate-100 !rounded-xl !overflow-hidden'}
+              nodeColor={isDark ? '#3f3f46' : '#e0e7ff'}
+              nodeStrokeColor={isDark ? '#71717a' : '#a5b4fc'}
+              maskColor={isDark ? 'rgba(255, 255, 255, 0.03)' : 'rgba(15, 23, 42, 0.03)'}
               zoomable
               pannable
             />
           </ReactFlow>
         ) : (
-          <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-400 select-none bg-slate-50">
+          <div className={`flex flex-col items-center justify-center h-full gap-3 text-slate-400 select-none ${isDark ? 'bg-zinc-950 text-zinc-400' : 'bg-slate-50'}`}>
             <span className="text-6xl">📐</span>
-            <p className="text-base font-semibold text-slate-800">El espacio de trabajo está vacío</p>
+            <p className={`text-base font-semibold ${isDark ? 'text-zinc-200' : 'text-slate-800'}`}>El espacio de trabajo está vacío</p>
           </div>
         )}
       </div>
