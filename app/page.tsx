@@ -622,19 +622,30 @@ export default function Home() {
   const nodesById = new Map(nodes.map((n) => [n.id, n]));
   const displayEdges = edges.map((edge) => {
     const floatingEdge = withFloatingHandles(edge, nodesById);
-    if (!selectedTableId) return floatingEdge;
+    
+    // Si no hay selección, devolvemos la arista flotante con el tipo de línea global
+    if (!selectedTableId) {
+      return {
+        ...floatingEdge,
+        data: {
+          ...floatingEdge.data,
+          edgeType: edgeType, // Asegurar que el tipo de línea se aplique siempre
+        }
+      };
+    }
 
+    // Lógica de selección existente
     const belongsToSelection = edge.source === selectedTableId || edge.target === selectedTableId;
 
     return {
       ...floatingEdge,
-      animated: belongsToSelection, // Solo animar las aristas que pertenecen a la selección
+      animated: belongsToSelection,
       data: {
         ...floatingEdge.data,
         isFocused: belongsToSelection,
         styleType: 'bezier',
         isDimmed: !belongsToSelection,
-        edgeType: edgeType, // Aplicar el tipo de línea seleccionado globalmente
+        edgeType: edgeType, // También aplicar aquí cuando hay selección
       }
     };
   });
