@@ -20,3 +20,10 @@ A powerful, interactive database schema visualizer that parses PostgreSQL DDL an
 - **SQL Parser:** [pgsql-ast-parser](https://github.com/oguimbal/pgsql-ast-parser)
 - **Styling:** [Tailwind CSS](https://tailwindcss.com/)
 
+## 🚀 Getting Started
+
+First, install the dependencies:
+
+```bash
+npm install
+npm run dev
