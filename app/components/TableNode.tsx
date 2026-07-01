@@ -55,22 +55,38 @@ export default function TableNode({ data }: NodeProps<TableNodeData>) {
               />
 
               {/* Column Info */}
-              <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                <div className="flex items-center gap-0.5 text-xs text-gray-500 flex-shrink-0">
-                  {col.isPK && <span title="Primary Key">🔑</span>}
-                  {col.isFKSource && <span title="Foreign Key">🔗</span>}
-                </div>
-                
-                <span className={`text-xs font-mono truncate ${
-                  col.isPK ? 'font-bold text-gray-900' : 'text-gray-700'
-                }`}>
-                  {col.name}
-                </span>
+<div className="flex items-center gap-1.5 flex-1 min-w-0">
+  <div className="flex items-center gap-0.5 text-xs text-gray-500 flex-shrink-0">
+    {col.isPK && <span title="Primary Key">🔑</span>}
+    {col.isFKSource && <span title="Foreign Key">🔗</span>}
+  </div>
+  
+  <span className={`text-xs font-mono truncate ${
+    col.isPK ? 'font-bold text-gray-900' : 'text-gray-700'
+  }`}>
+    {col.name}
+  </span>
 
-                <span className="text-xs text-gray-400 font-mono truncate flex-shrink-0">
-                  {col.type.toLowerCase()}
-                </span>
-              </div>
+  <span className="text-xs text-gray-400 font-mono truncate flex-shrink-0">
+    {col.type.toLowerCase()}
+  </span>
+
+  {/* Indicador NULL / NOT NULL */}
+  <span className={`text-[10px] font-medium px-1 rounded ${
+    col.isNullable === false 
+      ? 'bg-red-100 text-red-700' 
+      : 'bg-green-100 text-green-700'
+  }`} title={col.isNullable === false ? 'NOT NULL' : 'NULL'}>
+    {col.isNullable === false ? 'NN' : 'N'}
+  </span>
+
+  {/* Valor por defecto si existe */}
+  {col.defaultValue && (
+    <span className="text-[10px] bg-blue-100 text-blue-700 px-1 rounded font-mono truncate max-w-[80px]" title={`Default: ${col.defaultValue}`}>
+      D:{col.defaultValue.length > 8 ? col.defaultValue.substring(0, 8) + '...' : col.defaultValue}
+    </span>
+  )}
+</div>
 
               {/* Right Handles */}
               <Handle

@@ -225,68 +225,68 @@ export function parsePostgresSQL(sql: string): ParsedSchema {
         const indexes: IndexInfo[] = [];
 
         // Pass 1: extract columns + inline PK/FK/UNIQUE/NOT NULL/DEFAULT
-        if (stmt.columns) {
-          for (const col of stmt.columns) {
-            if (col.kind === 'column') {
-              let isPK = false;
-              let isFKSource = false;
-              let isUnique = false;
-              let isNullable = true;
-              let defaultValue: string | undefined;
-              const colName = getName(col.name);
+if (stmt.columns) {
+  for (const col of stmt.columns) {
+    if (col.kind === 'column') {
+      let isPK = false;
+      let isFKSource = false;
+      let isUnique = false;
+      let isNullable = true;
+      let defaultValue: string | undefined;
+      const colName = getName(col.name);
 
-              if (col.constraints) {
-                for (const c of col.constraints) {
-                  if (c.type === 'primary key') {
-                    isPK = true;
-                    isNullable = false;
-                  }
-                  if (c.type === 'not null') isNullable = false;
-                  if (c.type === 'null') isNullable = true;
-                  if (c.type === 'unique') isUnique = true;
-                  if (c.type === 'default') {
-                    defaultValue = getDefaultValueString(c.default);
-                  }
+      if (col.constraints) {
+        for (const c of col.constraints) {
+          if (c.type === 'primary key') {
+            isPK = true;
+            isNullable = false;
+          }
+          if (c.type === 'not null') isNullable = false;
+          if (c.type === 'null') isNullable = true;
+          if (c.type === 'unique') isUnique = true;
+          if (c.type === 'default') {
+            defaultValue = getDefaultValueString(c.default);
+          }
 
-                  if (c.type === 'reference' || c.type === 'foreign key' || c.type === 'foreign_key') {
-                    isFKSource = true;
-                    const targetTable = getName(
-                      c.foreignTable || c.references?.table || c.table
-                    );
-                    const targetCol = getName(
-                      c.foreignColumns?.[0] || c.references?.columns?.[0] || c.columns?.[0]
-                    );
-                    if (targetTable && targetCol) {
-                      relationships.push({
-                        sourceTable: tableName,
-                        sourceColumn: colName,
-                        targetTable,
-                        targetColumn: targetCol,
-                        constraintName: c.constraintName ? getName(c.constraintName) : undefined,
-                        onDelete: c.onDelete ? String(c.onDelete).toUpperCase() : undefined,
-                        onUpdate: c.onUpdate ? String(c.onUpdate).toUpperCase() : undefined,
-                      });
-                    }
-                  }
-                }
-              }
-
-              columns.push({
-                name: colName,
-                type: getDataTypeString(col.dataType),
-                isPK,
-                isFKSource,
-                isUnique,
-                isNullable,
-                defaultValue,
+          if (c.type === 'reference' || c.type === 'foreign key' || c.type === 'foreign_key') {
+            isFKSource = true;
+            const targetTable = getName(
+              c.foreignTable || c.references?.table || c.table
+            );
+            const targetCol = getName(
+              c.foreignColumns?.[0] || c.references?.columns?.[0] || c.columns?.[0]
+            );
+            if (targetTable && targetCol) {
+              relationships.push({
+                sourceTable: tableName,
+                sourceColumn: colName,
+                targetTable,
+                targetColumn: targetCol,
+                constraintName: c.constraintName ? getName(c.constraintName) : undefined,
+                onDelete: c.onDelete ? String(c.onDelete).toUpperCase() : undefined,
+                onUpdate: c.onUpdate ? String(c.onUpdate).toUpperCase() : undefined,
               });
-
-              if (isUnique && !isPK) {
-                indexes.push({ columns: [colName], isUnique: true, fromConstraint: true });
-              }
             }
           }
         }
+      }
+
+      columns.push({
+        name: colName,
+        type: getDataTypeString(col.dataType),
+        isPK,
+        isFKSource,
+        isUnique,
+        isNullable,
+        defaultValue,
+      });
+
+      if (isUnique && !isPK) {
+        indexes.push({ columns: [colName], isUnique: true, fromConstraint: true });
+      }
+    }
+  }
+}
 
         // Pass 2: table-level constraints (PK, FK, UNIQUE)
         if (stmt.constraints) {
