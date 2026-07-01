@@ -1,6 +1,6 @@
 import dagre from 'dagre';
 import { Node, Edge, Position } from 'reactflow';
-
+//
 const NODE_WIDTH = 320;         // Sincronizado exactamente con el componente TableNode
 const COL_HEIGHT = 37;          // Incrementado milimétricamente para dar holgura a las filas
 const HEADER_HEIGHT = 50;       // Altura real del header textificado de la tabla

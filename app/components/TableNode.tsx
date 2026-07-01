@@ -2,7 +2,7 @@
 import { Handle, Position, NodeProps } from 'reactflow';
 import { Column, IndexInfo } from '../lib/types';
 import { buildHandleId } from '../lib/sqlParser';
-
+//
 
 interface TableNodeData {
   label: string;

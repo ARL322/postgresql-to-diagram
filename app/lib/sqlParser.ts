@@ -1,6 +1,6 @@
 import { parse } from 'pgsql-ast-parser';
 import { ParsedSchema, Table, Column, Relationship, IndexInfo } from './types';
-
+//
 function getName(name: any): string {
   if (!name) return '';
   if (typeof name === 'string') return name.trim();
