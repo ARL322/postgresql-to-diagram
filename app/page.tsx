@@ -433,6 +433,7 @@ export default function Home() {
             columns: table.columns,
             indexes: table.indexes,
             comment: table.comment,
+            isDark,
           },
           position: { x: 0, y: 0 },
         };
@@ -606,6 +607,19 @@ export default function Home() {
     };
   }, []);
 
+  // Actualizar el modo dark en todos los nodos cuando cambia isDark
+  useEffect(() => {
+    setNodes((nds) =>
+      nds.map((node) => ({
+        ...node,
+        data: {
+          ...node.data,
+          isDark,
+        },
+      }))
+    );
+  }, [isDark, setNodes]);
+
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     setSelectedTableId(node.id);
   }, []);
@@ -625,6 +639,10 @@ export default function Home() {
     return {
       ...node,
       className: isCurrent || isConnected ? '' : 'node-dimmed',
+      data: {
+        ...node.data,
+        isDark,
+      },
     };
   });
 
