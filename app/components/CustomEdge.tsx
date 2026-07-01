@@ -1,7 +1,7 @@
 "use client";
 import React, { useState } from 'react';
-import { EdgeProps, getBezierPath, getSmoothStepPath, EdgeLabelRenderer, Position } from 'reactflow';
-//
+import { EdgeProps, getBezierPath, getSmoothStepPath, getStraightPath, EdgeLabelRenderer, Position } from 'reactflow';
+
 export default function CustomEdge({
   id,
   sourceX,
@@ -20,7 +20,10 @@ export default function CustomEdge({
   // Extraemos las propiedades de control enviadas desde page.tsx
   const isFocused = data?.isFocused ?? false;
   const isDimmed = data?.isDimmed ?? false;
-  const useStepLine = data?.styleType === 'step';
+  
+  // Determinar el tipo de línea: 'default' | 'smoothstep' | 'step' | 'straight'
+  const edgeType = data?.edgeType || 'default';
+  
   const edgeOffset = data?.offset ?? 0;
   const cardinalityLabels: { source: string; target: string } =
     data?.cardinalityLabels ?? { source: '*', target: '1' };
@@ -29,26 +32,36 @@ export default function CustomEdge({
   const sourceBadgeOffsetY = data?.sourceBadgeOffsetY ?? 0;
   const targetBadgeOffsetY = data?.targetBadgeOffsetY ?? 0;
 
+  // Función auxiliar para obtener el path según el tipo
+  const getPath = (
+    sx: number, sy: number, sp: Position,
+    tx: number, ty: number, tp: Position
+  ) => {
+    const commonProps = { sourceX: sx, sourceY: sy, sourcePosition: sp, targetX: tx, targetY: ty, targetPosition: tp };
+    
+    switch (edgeType) {
+      case 'smoothstep':
+        // getSmoothStepPath devuelve [path, labelX, labelY, offsetX, offsetY]
+        return getSmoothStepPath({ ...commonProps, borderRadius: 12, offset: 35 + edgeOffset });
+      case 'step':
+        // Simulamos step usando smoothstep con borderRadius 0
+        return getSmoothStepPath({ ...commonProps, borderRadius: 0, offset: 35 + edgeOffset });
+      case 'straight':
+        // getStraightPath devuelve [path, labelX, labelY]
+        return getStraightPath(commonProps);
+      case 'default':
+      default:
+        // getBezierPath devuelve [path, labelX, labelY]
+        return getBezierPath(commonProps);
+    }
+  };
+
   // Decidir el algoritmo geométrico de la línea
-  const [edgePath, labelX, labelY] = useStepLine
-    ? getSmoothStepPath({
-        sourceX,
-        sourceY,
-        sourcePosition,
-        targetX,
-        targetY,
-        targetPosition,
-        borderRadius: 12,
-        offset: 35 + edgeOffset,
-      })
-    : getBezierPath({
-        sourceX,
-        sourceY,
-        sourcePosition,
-        targetX,
-        targetY,
-        targetPosition,
-      });
+  // Nota: Algunas funciones devuelven 5 elementos, otras 3. Usamos índices explícitos.
+  const pathResult = getPath(sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition);
+  const edgePath = pathResult[0];
+  const labelX = pathResult[1];
+  const labelY = pathResult[2];
 
   // ¿La curva va de derecha a izquierda? Si seguimos ese mismo trazado para
   // el texto, los glifos quedarían boca abajo/espejados (textPath sigue la
@@ -56,27 +69,12 @@ export default function CustomEdge({
   // segundo path -solo para el texto-, con la misma forma pero recorrido en
   // sentido inverso (izquierda -> derecha), así el texto siempre se lee bien.
   const isPathRightToLeft = sourceX > targetX;
-  const [textPath] = isPathRightToLeft
-    ? (useStepLine
-        ? getSmoothStepPath({
-            sourceX: targetX,
-            sourceY: targetY,
-            sourcePosition: targetPosition,
-            targetX: sourceX,
-            targetY: sourceY,
-            targetPosition: sourcePosition,
-            borderRadius: 12,
-            offset: 35 + edgeOffset,
-          })
-        : getBezierPath({
-            sourceX: targetX,
-            sourceY: targetY,
-            sourcePosition: targetPosition,
-            targetX: sourceX,
-            targetY: sourceY,
-            targetPosition: sourcePosition,
-          }))
-    : [edgePath];
+  
+  let textPath = edgePath;
+  if (isPathRightToLeft) {
+     const reverseResult = getPath(targetX, targetY, targetPosition, sourceX, sourceY, sourcePosition);
+     textPath = reverseResult[0];
+  }
 
   // Definición de colores y grosores según el estado interactivo
   let strokeColor = style.stroke || '#4f46e5';

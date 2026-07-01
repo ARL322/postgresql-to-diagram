@@ -403,6 +403,7 @@ export default function Home() {
   const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
   const [isTextSelectionMode, setIsTextSelectionMode] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [edgeType, setEdgeType] = useState<'default' | 'smoothstep' | 'step' | 'straight'>('default');
 
   const handleGenerate = useCallback(() => {
     setError(null);
@@ -633,6 +634,7 @@ export default function Home() {
         isFocused: belongsToSelection,
         styleType: 'bezier',
         isDimmed: !belongsToSelection,
+        edgeType: edgeType, // Aplicar el tipo de línea seleccionado globalmente
       }
     };
   });
@@ -689,6 +691,23 @@ export default function Home() {
         >
           Generar Diagrama de Entidades
         </button>
+
+        {/* Selector de tipo de línea */}
+        <div className="flex flex-col gap-1.5 border-t border-slate-100 pt-3">
+          <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
+            Tipo de Línea
+          </label>
+          <select
+            value={edgeType}
+            onChange={(e) => setEdgeType(e.target.value as 'default' | 'smoothstep' | 'step' | 'straight')}
+            className="w-full px-2.5 py-2 bg-white border border-slate-200 rounded-lg text-xs text-slate-700 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none cursor-pointer hover:bg-slate-50 transition-colors"
+          >
+            <option value="default">Curva (Bezier)</option>
+            <option value="smoothstep">Suave (SmoothStep)</option>
+            <option value="step">Escalera (Step)</option>
+            <option value="straight">Recta (Straight)</option>
+          </select>
+        </div>
 
         <div className="text-[10px] text-slate-400 flex flex-col gap-2 border-t border-slate-100 pt-3.5">
           <span className="font-semibold text-slate-500 uppercase tracking-wider text-[9px]">💡 Tips de Navegación</span>
