@@ -13,7 +13,7 @@ interface TableNodeData {
 }
 
 export default function TableNode({ data }: NodeProps<TableNodeData>) {
-  const displayName = data.label;
+  const displayName = data.schema ? `${data.schema}.${data.label}` : data.label;
   const allIndexes = data.indexes ?? [];
 
   return (
@@ -23,7 +23,9 @@ export default function TableNode({ data }: NodeProps<TableNodeData>) {
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 bg-gray-50 border-b border-gray-300 rounded-t-md">
         <div className="flex items-center gap-2 overflow-hidden">
-          <span className="font-semibold text-sm text-gray-800 truncate">{displayName}</span>
+          <span className="font-semibold text-sm text-gray-800 truncate" title={displayName}>
+            {displayName}
+          </span>
         </div>
       </div>
 
