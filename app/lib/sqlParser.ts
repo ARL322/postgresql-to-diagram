@@ -205,7 +205,7 @@ export function parsePostgresSQL(sql: string): ParsedSchema {
     }
 
     for (const stmt of stmtAst) {
-      if (stmt.type === 'create table') {
+      if (stmt.type === 'create table' || (stmt as any).type === 'create table if not exists') {
         const tableName = getName(stmt.name);
         const schema = stmt.name?.schema ? getName(stmt.name.schema) : undefined;
         const columns: Column[] = [];
