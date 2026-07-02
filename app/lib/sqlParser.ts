@@ -1,6 +1,6 @@
 import { parse } from 'pgsql-ast-parser';
-import { ParsedSchema, Table, Column, Relationship, IndexInfo } from './types';
-//
+import { ParsedSchema, Table, Column, Relationship, IndexInfo, TriggerInfo } from './types';
+
 function getName(name: any): string {
   if (!name) return '';
   if (typeof name === 'string') return name.trim();
@@ -197,11 +197,13 @@ export function parsePostgresSQL(sql: string): ParsedSchema {
   const tablesByKey = new Map<string, Table>();
   const relationships: Relationship[] = [];
 
-  // CREATE INDEX statements are collected separately because they can
+ // CREATE INDEX statements are collected separately because they can
   // appear before or after the CREATE TABLE in the script.
   const pendingIndexStatements: any[] = [];
   // ALTER TABLE ... ADD CONSTRAINT (FK/UNIQUE/PK) added after table creation.
   const pendingAlterStatements: any[] = [];
+  // CREATE TRIGGER statements collected separately.
+  const pendingTriggerStatements: any[] = [];
 
   const statements = splitStatements(sql);
 
@@ -357,10 +359,12 @@ if (stmt.columns) {
         const table: Table = { name: tableName, schema, columns, indexes, comment: extractComment(stmt) };
         tables.push(table);
         tablesByKey.set(tableKey(schema, tableName), table);
-      } else if (stmt.type === 'create index') {
+     } else if (stmt.type === 'create index') {
         pendingIndexStatements.push(stmt);
       } else if (stmt.type === 'alter table') {
         pendingAlterStatements.push(stmt);
+      } else if (stmt.type === 'create trigger') {
+        pendingTriggerStatements.push(stmt);
       }
     }
   }
@@ -396,6 +400,47 @@ if (stmt.columns) {
       });
     }
   }
+
+  // Resolve CREATE TRIGGER statements against the tables collected above.
+  for (const stmt of pendingTriggerStatements) {
+    const sAny = stmt as any;
+    const onTable = sAny.table || sAny.on;
+    const schema = onTable?.schema ? getName(onTable.schema) : undefined;
+    const tableName = getName(onTable);
+    const table =
+      tablesByKey.get(tableKey(schema, tableName)) ??
+      [...tablesByKey.values()].find(t => t.name.toLowerCase() === tableName.toLowerCase());
+
+    if (!table) continue;
+
+    const triggerName = sAny.triggerName || sAny.name ? getName(sAny.triggerName || sAny.name) : undefined;
+    const timing = sAny.timing ? String(sAny.timing).toUpperCase() : 'UNKNOWN';
+    const events: string[] = [];
+    if (sAny.events) {
+      const evArray = Array.isArray(sAny.events) ? sAny.events : [sAny.events];
+      evArray.forEach((ev: any) => {
+        const evStr = String(ev).toUpperCase();
+        if (evStr && !events.includes(evStr)) events.push(evStr);
+      });
+    }
+    const funcName = sAny.functionCall?.name 
+      ? `${getName(sAny.functionCall.name)}(${(sAny.functionCall.args || []).map((a: any) => String(a)).join(', ')})`
+      : (sAny.functionName ? `${getName(sAny.functionName)}()` : 'UNKNOWN');
+    const forEachRow = Boolean(sAny.forEach === 'row' || sAny.forEachRow);
+    const whenClause = sAny.when ? String(sAny.when) : undefined;
+
+    table.triggers = table.triggers || [];
+    table.triggers.push({
+      name: triggerName,
+      timing,
+      events,
+      onTable: tableName,
+      function: funcName,
+      forEachRow,
+      when: whenClause,
+    });
+  }
+
 
   // Resolve ALTER TABLE ... ADD CONSTRAINT (FK / UNIQUE / PK) statements.
   for (const stmt of pendingAlterStatements) {

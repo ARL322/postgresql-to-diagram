@@ -1,6 +1,6 @@
 "use client";
 import { Handle, Position, NodeProps } from 'reactflow';
-import { Column, IndexInfo } from '../lib/types';
+import { Column, IndexInfo, TriggerInfo } from '../lib/types';
 import { buildHandleId } from '../lib/sqlParser';
 
 interface TableNodeData {
@@ -9,12 +9,14 @@ interface TableNodeData {
   schema?: string;
   columns: Column[];
   indexes?: IndexInfo[];
+  triggers?: TriggerInfo[];
   comment?: string;
 }
 
 export default function TableNode({ data }: NodeProps<TableNodeData>) {
   const displayName = data.schema ? `${data.schema}.${data.label}` : data.label;
   const allIndexes = data.indexes ?? [];
+  const allTriggers = data.triggers ?? [];
 
   return (
     <div
@@ -110,21 +112,50 @@ export default function TableNode({ data }: NodeProps<TableNodeData>) {
         })}
       </div>
 
-      {/* Indexes Footer */}
-      {allIndexes.length > 0 && (
+      {/* Indexes & Triggers Footer */}
+      {(allIndexes.length > 0 || allTriggers.length > 0) && (
         <div className="border-t border-gray-300 bg-gray-50 rounded-b-md px-3 py-2">
-          <div className="text-xs font-medium text-gray-500 mb-1">
-            Indexes ({allIndexes.length})
-          </div>
-          <div className="flex flex-col gap-1 max-h-[120px] overflow-y-auto">
-            {allIndexes.map((idx, i) => (
-              <div key={i} className="flex items-center gap-1.5 text-xs">
-                <span className="text-gray-400">{idx.isUnique ? '💎' : '⚡'}</span>
-                <span className="font-mono text-gray-600 truncate">{idx.name}</span>
-                <span className="text-gray-400 font-mono text-xs">({idx.columns.join(', ')})</span>
+          {allIndexes.length > 0 && (
+            <>
+              <div className="text-xs font-medium text-gray-500 mb-1">
+                Indexes ({allIndexes.length})
               </div>
-            ))}
-          </div>
+              <div className="flex flex-col gap-1 max-h-[120px] overflow-y-auto mb-2">
+                {allIndexes.map((idx, i) => (
+                  <div key={i} className="flex items-center gap-1.5 text-xs">
+                    <span className="text-gray-400">{idx.isUnique ? '💎' : '⚡'}</span>
+                    <span className="font-mono text-gray-600 truncate">{idx.name}</span>
+                    <span className="text-gray-400 font-mono text-xs">({idx.columns.join(', ')})</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+          {allTriggers.length > 0 && (
+            <>
+              <div className="text-xs font-medium text-gray-500 mb-1">
+                Triggers ({allTriggers.length})
+              </div>
+              <div className="flex flex-col gap-1 max-h-[120px] overflow-y-auto">
+                {allTriggers.map((trg, i) => (
+                  <div key={i} className="flex items-start gap-1.5 text-xs">
+                    <span className="text-gray-400">🔔</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-mono text-gray-600 truncate" title={trg.name}>
+                        {trg.name}
+                      </div>
+                      <div className="text-gray-400 text-[10px]">
+                        {trg.timing} {trg.events.join(' / ')} → {trg.function}
+                      </div>
+                      {trg.forEachRow && (
+                        <div className="text-gray-400 text-[10px]">FOR EACH ROW</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

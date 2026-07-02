@@ -17,11 +17,22 @@ export interface IndexInfo {
   fromConstraint?: boolean;
 }
 
+export interface TriggerInfo {
+  name?: string;
+  timing: string;        // BEFORE, AFTER, INSTEAD OF
+  events: string[];     // INSERT, UPDATE, DELETE
+  onTable?: string;
+  function: string;
+  forEachRow?: boolean;
+  when?: string;
+}
+
 export interface Table {
   name: string;
   schema?: string;
   columns: Column[];
   indexes?: IndexInfo[];
+  triggers?: TriggerInfo[];
   comment?: string;
 }
 
