@@ -326,12 +326,15 @@ const flowNodes: Node[] = [
               SELECT: '#9333ea',  // purple
             };
 
+            // Conectar a un handle genérico en la tabla destino (usamos una clave especial)
+            const targetHandleId = buildHandleId(targetNodeId, '_proc_target', 'target');
+
             procEdges.push({
               id: `e-proc-${proc.name}-${op.tableName}-${op.operationType}`,
               source: procNodeId,
               target: targetNodeId,
               sourceHandle: `${handleId}__R`,
-              targetHandle: `${buildHandleId(targetNodeId, 'name', 'target')}__L`,
+              targetHandle: `${targetHandleId}__L`,
               type: 'customEdge',
               animated: true,
               style: { stroke: operationColors[op.operationType] || '#6b7280' },
@@ -341,7 +344,7 @@ const flowNodes: Node[] = [
                 targetTable: targetNodeId,
                 offset: 0,
                 baseSourceHandle: handleId,
-                baseTargetHandle: buildHandleId(targetNodeId, 'name', 'target'),
+                baseTargetHandle: targetHandleId,
                 cardinalityLabels: { source: '1', target: '*' },
                 sourceBadgeOffsetY: 0,
                 targetBadgeOffsetY: 0,
