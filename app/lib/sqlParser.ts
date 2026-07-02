@@ -204,6 +204,10 @@ export function parsePostgresSQL(sql: string): ParsedSchema {
   const pendingAlterStatements: any[] = [];
   // CREATE TRIGGER statements collected separately.
   const pendingTriggerStatements: any[] = [];
+  // CREATE FUNCTION statements that return TRIGGER, keyed by lowercased
+  // function name so lookups from CREATE TRIGGER (regex fallback) match
+  // regardless of the casing used in either statement.
+  const triggerFunctions = new Map<string, { name: string; code: string; returns: string }>();
 
   const statements = splitStatements(sql);
 
@@ -365,6 +369,22 @@ if (stmt.columns) {
         pendingAlterStatements.push(stmt);
       } else if (stmt.type === 'create trigger') {
         pendingTriggerStatements.push(stmt);
+      } else if (stmt.type === 'create function') {
+        // Guardar funciones que retornan TRIGGER para vincularlas con
+        // los triggers que las invoquen (getDataTypeString no aplica aquí
+        // porque `returns` para funciones es un DataTypeDef simple, no
+        // una columna, así que basta con leer `.name`).
+        const funcName = getName(stmt.name);
+        const returns = stmt.returns && 'name' in stmt.returns
+          ? String((stmt.returns as any).name).toUpperCase()
+          : '';
+        if (returns === 'TRIGGER' && funcName) {
+          triggerFunctions.set(funcName.toLowerCase(), {
+            name: funcName,
+            code: stmt.code || '',
+            returns,
+          });
+        }
       }
     }
   }
@@ -401,7 +421,61 @@ if (stmt.columns) {
     }
   }
 
-  // Resolve CREATE TRIGGER statements against the tables collected above.
+  // Helper: given a raw "function()" / "schema.function(args)" string,
+  // find its code among the CREATE FUNCTION ... RETURNS TRIGGER statements
+  // collected earlier. Strips arguments/parens and schema qualification
+  // before doing a case-insensitive lookup.
+  const resolveTriggerFunctionCode = (rawFuncName: string): string | undefined => {
+    const bare = rawFuncName.replace(/\(.*$/, '').trim(); // drop "(args)"
+    const unqualified = bare.includes('.') ? bare.split('.').pop()! : bare;
+    return triggerFunctions.get(unqualified.toLowerCase())?.code;
+  };
+
+  // Resolve CREATE TRIGGER statements. pgsql-ast-parser 12.0.2 does not
+  // support the CREATE TRIGGER grammar at all (it throws and the whole
+  // statement is skipped by the outer try/catch), so `pendingTriggerStatements`
+  // will normally stay empty. We fall back to a regex-based parser run
+  // against the full raw SQL so triggers still show up in the diagram.
+  // The AST-based loop below is kept as a forward-compatible path in case
+  // a future version of the library (or a different parser) does populate
+  // `pendingTriggerStatements`.
+  const triggerRegex =
+    /CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+(\w+)\s+(BEFORE|AFTER|INSTEAD\s+OF)\s+(INSERT|UPDATE|DELETE)(?:\s+OR\s+(INSERT|UPDATE|DELETE))?(?:\s+OR\s+(INSERT|UPDATE|DELETE))?\s+ON\s+(?:[\w"]+\.)?(\w+)(?:\s+FOR\s+EACH\s+(ROW|STATEMENT))?\s+EXECUTE\s+(?:FUNCTION|PROCEDURE)\s+([\w".]+)\s*\(/gi;
+
+  const triggersHandledByRegex = new Set<string>();
+
+  for (const match of sql.matchAll(triggerRegex)) {
+    const [, triggerName, timingRaw, ev1, ev2, ev3, tableName, forEachRaw, rawFuncName] = match;
+
+    const table = [...tablesByKey.values()].find(
+      t => t.name.toLowerCase() === tableName.toLowerCase()
+    );
+    if (!table) continue;
+
+    const timing = timingRaw.toUpperCase().replace(/\s+/g, ' ');
+    const events = [ev1, ev2, ev3].filter(Boolean).map(e => e.toUpperCase());
+    const forEachRow = (forEachRaw || '').toUpperCase() === 'ROW';
+    const functionLabel = `${rawFuncName}()`;
+    const functionCode = resolveTriggerFunctionCode(rawFuncName);
+
+    table.triggers = table.triggers || [];
+    table.triggers.push({
+      name: triggerName,
+      timing,
+      events,
+      onTable: table.name,
+      function: functionLabel,
+      forEachRow,
+      functionCode,
+    });
+
+    triggersHandledByRegex.add(triggerName.toLowerCase());
+  }
+
+  // Resolve CREATE TRIGGER statements that the AST parser *did* manage to
+  // produce (currently a no-op with pgsql-ast-parser 12.0.2, kept for when
+  // the library adds support or is swapped out). Skips anything the regex
+  // fallback above already added, to avoid duplicate trigger entries.
   for (const stmt of pendingTriggerStatements) {
     const sAny = stmt as any;
     const onTable = sAny.table || sAny.on;
@@ -414,6 +488,8 @@ if (stmt.columns) {
     if (!table) continue;
 
     const triggerName = sAny.triggerName || sAny.name ? getName(sAny.triggerName || sAny.name) : undefined;
+    if (triggerName && triggersHandledByRegex.has(triggerName.toLowerCase())) continue;
+
     const timing = sAny.timing ? String(sAny.timing).toUpperCase() : 'UNKNOWN';
     const events: string[] = [];
     if (sAny.events) {
@@ -428,6 +504,7 @@ if (stmt.columns) {
       : (sAny.functionName ? `${getName(sAny.functionName)}()` : 'UNKNOWN');
     const forEachRow = Boolean(sAny.forEach === 'row' || sAny.forEachRow);
     const whenClause = sAny.when ? String(sAny.when) : undefined;
+    const functionCode = resolveTriggerFunctionCode(funcName);
 
     table.triggers = table.triggers || [];
     table.triggers.push({
@@ -438,6 +515,7 @@ if (stmt.columns) {
       function: funcName,
       forEachRow,
       when: whenClause,
+      functionCode,
     });
   }
 

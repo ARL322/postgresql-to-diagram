@@ -13,9 +13,16 @@ function visibleIndexCount(node: Node): number {
   return indexes.length;
 }
 
-export function getNodeHeight(columnCount: number, indexCount = 0): number {
+function visibleTriggerCount(node: Node): number {
+  const triggers = node.data.triggers as unknown[] | undefined;
+  if (!triggers || triggers.length === 0) return 0;
+  return triggers.length;
+}
+
+export function getNodeHeight(columnCount: number, indexCount = 0, triggerCount = 0): number {
   const indexSection = indexCount > 0 ? INDEX_HEADER_HEIGHT + indexCount * INDEX_ROW_HEIGHT : 0;
-  return HEADER_HEIGHT + columnCount * COL_HEIGHT + indexSection + 16;
+  const triggerSection = triggerCount > 0 ? INDEX_HEADER_HEIGHT + triggerCount * INDEX_ROW_HEIGHT : 0;
+  return HEADER_HEIGHT + columnCount * COL_HEIGHT + indexSection + triggerSection + 16;
 }
 
 export function getLayoutedElements(
@@ -37,7 +44,8 @@ export function getLayoutedElements(
   nodes.forEach((node) => {
     const colCount = node.data.columns?.length ?? 1;
     const idxCount = visibleIndexCount(node);
-    dagreGraph.setNode(node.id, { width: NODE_WIDTH, height: getNodeHeight(colCount, idxCount) });
+    const trgCount = visibleTriggerCount(node);
+    dagreGraph.setNode(node.id, { width: NODE_WIDTH, height: getNodeHeight(colCount, idxCount, trgCount) });
   });
 
   edges.forEach((edge) => {
@@ -50,13 +58,14 @@ export function getLayoutedElements(
     const pos = dagreGraph.node(node.id);
     const colCount = node.data.columns?.length ?? 1;
     const idxCount = visibleIndexCount(node);
+    const trgCount = visibleTriggerCount(node);
     return {
       ...node,
       targetPosition: isHorizontal ? Position.Left : Position.Top,
       sourcePosition: isHorizontal ? Position.Right : Position.Bottom,
       position: {
         x: pos.x - NODE_WIDTH / 2,
-        y: pos.y - getNodeHeight(colCount, idxCount) / 2,
+        y: pos.y - getNodeHeight(colCount, idxCount, trgCount) / 2,
       },
     };
   });

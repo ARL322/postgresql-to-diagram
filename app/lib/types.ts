@@ -25,6 +25,7 @@ export interface TriggerInfo {
   function: string;
   forEachRow?: boolean;
   when?: string;
+  functionCode?: string; // Cuerpo de la función, cuando proviene de un CREATE FUNCTION ... RETURNS TRIGGER en el mismo script
 }
 
 export interface Table {

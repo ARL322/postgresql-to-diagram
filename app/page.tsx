@@ -173,22 +173,23 @@ export default function Home() {
     try {
       const { tables, relationships } = parsePostgresSQL(sqlInput);
 
-      const flowNodes: Node[] = tables.map((table) => {
-        const nodeId = sanitizeId(table.name);
-        return {
-          id: nodeId,
-          type: 'tableNode',
-          data: {
-            label: table.name,
-            nodeId,
-            schema: table.schema,
-            columns: table.columns,
-            indexes: table.indexes,
-            comment: table.comment,
-          },
-          position: { x: 0, y: 0 },
-        };
-      });
+const flowNodes: Node[] = tables.map((table) => {
+  const nodeId = sanitizeId(table.name);
+  return {
+    id: nodeId,
+    type: 'tableNode',
+    data: {
+      label: table.name,
+      nodeId,
+      schema: table.schema,
+      columns: table.columns,
+      indexes: table.indexes,
+      triggers: table.triggers, // ← faltaba: sin esto TableNode nunca ve los triggers
+      comment: table.comment,
+    },
+    position: { x: 0, y: 0 },
+  };
+});
 
       const edgeCountMap: Record<string, number> = {};
 
