@@ -457,7 +457,7 @@ export function parsePostgresSQL(sql: string): ParsedSchema {
     if (!table) continue;
 
     // Skip if already handled by AST processing
-    if (table.triggers?.some(t => t.name.toLowerCase() === triggerName.toLowerCase())) {
+    if (table.triggers?.some(t => t.name && t.name.toLowerCase() === triggerName.toLowerCase())) {
       continue;
     }
 
