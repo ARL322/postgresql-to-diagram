@@ -406,9 +406,45 @@ export function parsePostgresSQL(sql: string): ParsedSchema {
     return triggerFunctions.get(unqualified.toLowerCase())?.code;
   };
 
-  // Fallback Regex-based trigger extractor
+  // Process pending CREATE TRIGGER statements from AST
+  for (const stmt of pendingTriggerStatements) {
+    const sAny = stmt as any;
+    const tableName = getName(sAny.table || sAny.on);
+    const table = [...tablesByKey.values()].find(
+      t => t.name.toLowerCase() === tableName.toLowerCase()
+    );
+    if (!table) continue;
+
+    const triggerName = getName(sAny.name || sAny.trigger);
+    const timing = sAny.when ? String(sAny.when).toUpperCase().replace(/_/g, ' ') : 'AFTER';
+    
+    // Extract events (can be array or single value)
+    const eventsRaw = sAny.events || sAny.event || [];
+    const events = (Array.isArray(eventsRaw) ? eventsRaw : [eventsRaw])
+      .map((e: any) => String(e).toUpperCase())
+      .filter(Boolean);
+
+    const forEachRow = sAny.forEach === 'ROW';
+    const funcName = getName(sAny.execute?.function || sAny.execute?.procedure || sAny.functionCall);
+    const functionLabel = funcName ? `${funcName}()` : '';
+    const functionCode = funcName ? resolveTriggerFunctionCode(funcName) : undefined;
+
+    table.triggers = table.triggers || [];
+    table.triggers.push({
+      name: triggerName,
+      timing,
+      events,
+      onTable: table.name,
+      function: functionLabel,
+      forEachRow,
+      functionCode,
+    });
+  }
+
+  // Fallback Regex-based trigger extractor (for edge cases not caught by AST)
+  // Uses [\s\S]*? to match across multiple lines (newlines, spaces, etc.)
   const triggerRegex =
-    /CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+(\w+)\s+(BEFORE|AFTER|INSTEAD\s+OF)\s+(INSERT|UPDATE|DELETE)(?:\s+OR\s+(INSERT|UPDATE|DELETE))?(?:\s+OR\s+(INSERT|UPDATE|DELETE))?\s+ON\s+(?:[\w"]+\.)?(\w+)(?:\s+FOR\s+EACH\s+(ROW|STATEMENT))?\s+EXECUTE\s+(?:FUNCTION|PROCEDURE)\s+([\w".]+)\s*\(/gi;
+    /CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)\s+(BEFORE|AFTER|INSTEAD\s+OF)\s+(INSERT|UPDATE|DELETE)(?:\s+OR\s+(INSERT|UPDATE|DELETE))?(?:\s+OR\s+(INSERT|UPDATE|DELETE))?[\s\S]*?\s+ON\s+(?:[\w"]+\.)?(\w+)(?:[\s\S]*?\s+FOR\s+EACH\s+(ROW|STATEMENT))?[\s\S]*?\s+EXECUTE\s+(?:FUNCTION|PROCEDURE)\s+([\w".]+)\s*\(/gi;
 
   const triggersHandledByRegex = new Set<string>();
 
@@ -419,6 +455,11 @@ export function parsePostgresSQL(sql: string): ParsedSchema {
       t => t.name.toLowerCase() === tableName.toLowerCase()
     );
     if (!table) continue;
+
+    // Skip if already handled by AST processing
+    if (table.triggers?.some(t => t.name.toLowerCase() === triggerName.toLowerCase())) {
+      continue;
+    }
 
     const timing = timingRaw.toUpperCase().replace(/\s+/g, ' ');
     const events = [ev1, ev2, ev3].filter(Boolean).map(e => e.toUpperCase());
