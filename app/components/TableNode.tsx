@@ -112,6 +112,15 @@ export default function TableNode({ data }: NodeProps<TableNodeData>) {
         })}
       </div>
 
+      {/* Handle especial para conexiones desde procedimientos almacenados */}
+      <Handle
+        type="target"
+        position={Position.Left}
+        id={`${buildHandleId(data.nodeId, '_proc_target', 'target')}__L`}
+        className="!w-0 !h-0 !opacity-0"
+        style={{ left: 0 }}
+      />
+
       {/* Indexes & Triggers Footer */}
       {(allIndexes.length > 0 || allTriggers.length > 0) && (
         <div className="border-t border-gray-300 bg-gray-50 rounded-b-md px-3 py-2">

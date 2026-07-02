@@ -1,5 +1,5 @@
 import { parse } from 'pgsql-ast-parser';
-import { ParsedSchema, Table, Column, Relationship, IndexInfo, TriggerInfo } from './types';
+import { ParsedSchema, Table, Column, Relationship, IndexInfo, TriggerInfo, Procedure, ProcedureTableOperation } from './types';
 
 function getName(name: any): string {
   if (!name) return '';
@@ -42,8 +42,8 @@ function getDataTypeString(dataType: any): string {
   let baseType = name ? String(name).toUpperCase() : String(kind).toUpperCase();
   if (!baseType || baseType === 'OBJECT') baseType = 'UNKNOWN';
 
-  // CORRECCIÓN: Capturar longitud o precisión si existen en el AST (ej. VARCHAR(255), NUMERIC(10,2))
-if (dataType.config && Array.isArray(dataType.config)) {
+  // Capturar longitud o precisión si existen en el AST (ej. VARCHAR(255), NUMERIC(10,2))
+  if (dataType.config && Array.isArray(dataType.config)) {
     const params = dataType.config.map((c: any) => c.value ?? c).filter(Boolean);
     if (params.length) return `${baseType}(${params.join(',')})`;
   } else if (dataType.length !== undefined) {
@@ -53,8 +53,6 @@ if (dataType.config && Array.isArray(dataType.config)) {
 }
 
 // Best-effort rendering of a DEFAULT expression back to readable SQL text.
-// pgsql-ast-parser expression nodes vary a lot in shape, so this stays
-// defensive and falls back gracefully instead of throwing.
 function getDefaultValueString(expr: any): string | undefined {
   if (expr === undefined || expr === null) return undefined;
   if (typeof expr === 'string') return expr;
@@ -81,8 +79,6 @@ function getDefaultValueString(expr: any): string | undefined {
     case 'ref':
       return getName(expr.name ?? expr);
     default:
-      // Fall back to whatever a `.name`/`.value` field offers, otherwise omit it
-      // rather than guessing wrong — better no badge than a misleading one.
       if (expr.value !== undefined) return String(expr.value);
       if (expr.name) return getName(expr.name);
       return undefined;
@@ -90,15 +86,10 @@ function getDefaultValueString(expr: any): string | undefined {
 }
 
 function extractComment(stmt: any): string | undefined {
-  // pgsql-ast-parser doesn't always retain leading SQL comments on the
-  // statement node itself, so this is intentionally tolerant.
   return stmt?.comment ? String(stmt.comment).trim() : undefined;
 }
 
-// Split a SQL script into individual top-level statements (on ';'),
-// respecting single-quoted strings (with '' escaping), double-quoted
-// identifiers, dollar-quoted strings ($$...$$ / $tag$...$tag$), and
-// parenthesis nesting so semicolons inside those don't split early.
+// Split a SQL script into individual top-level statements (on ';')
 function splitStatements(sql: string): string[] {
   const statements: string[] = [];
   let current = '';
@@ -126,7 +117,6 @@ function splitStatements(sql: string): string[] {
     if (inSingleQuote) {
       current += ch;
       if (ch === "'") {
-        // '' is an escaped quote, stay inside the string
         if (sql[i + 1] === "'") {
           current += "'";
           i += 2;
@@ -191,23 +181,15 @@ function splitStatements(sql: string): string[] {
 
 export function parsePostgresSQL(sql: string): ParsedSchema {
   const tables: Table[] = [];
-  // Map from "schema::table" (lowercased) -> Table, so CREATE INDEX /
-  // ALTER TABLE statements that reference a table can find it later
-  // regardless of statement order.
   const tablesByKey = new Map<string, Table>();
   const relationships: Relationship[] = [];
+  const procedures: Procedure[] = [];
 
- // CREATE INDEX statements are collected separately because they can
-  // appear before or after the CREATE TABLE in the script.
   const pendingIndexStatements: any[] = [];
-  // ALTER TABLE ... ADD CONSTRAINT (FK/UNIQUE/PK) added after table creation.
   const pendingAlterStatements: any[] = [];
-  // CREATE TRIGGER statements collected separately.
   const pendingTriggerStatements: any[] = [];
-  // CREATE FUNCTION statements that return TRIGGER, keyed by lowercased
-  // function name so lookups from CREATE TRIGGER (regex fallback) match
-  // regardless of the casing used in either statement.
   const triggerFunctions = new Map<string, { name: string; code: string; returns: string }>();
+  const pendingProcedureStatements: any[] = [];
 
   const statements = splitStatements(sql);
 
@@ -219,7 +201,6 @@ export function parsePostgresSQL(sql: string): ParsedSchema {
     try {
       stmtAst = parse(stmtText) as any[];
     } catch {
-      // Ignore statements we don't care about / can't parse:
       continue;
     }
 
@@ -230,71 +211,69 @@ export function parsePostgresSQL(sql: string): ParsedSchema {
         const columns: Column[] = [];
         const indexes: IndexInfo[] = [];
 
-        // Pass 1: extract columns + inline PK/FK/UNIQUE/NOT NULL/DEFAULT
-if (stmt.columns) {
-  for (const col of stmt.columns) {
-    if (col.kind === 'column') {
-      let isPK = false;
-      let isFKSource = false;
-      let isUnique = false;
-      let isNullable = true;
-      let defaultValue: string | undefined;
-      const colName = getName(col.name);
+        if (stmt.columns) {
+          for (const col of stmt.columns) {
+            if (col.kind === 'column') {
+              let isPK = false;
+              let isFKSource = false;
+              let isUnique = false;
+              let isNullable = true;
+              let defaultValue: string | undefined;
+              const colName = getName(col.name);
 
-      if (col.constraints) {
-        for (const c of col.constraints) {
-          if (c.type === 'primary key') {
-            isPK = true;
-            isNullable = false;
-          }
-          if (c.type === 'not null') isNullable = false;
-          if (c.type === 'null') isNullable = true;
-          if (c.type === 'unique') isUnique = true;
-          if (c.type === 'default') {
-            defaultValue = getDefaultValueString(c.default);
-          }
+              if (col.constraints) {
+                for (const c of col.constraints) {
+                  if (c.type === 'primary key') {
+                    isPK = true;
+                    isNullable = false;
+                  }
+                  if (c.type === 'not null') isNullable = false;
+                  if (c.type === 'null') isNullable = true;
+                  if (c.type === 'unique') isUnique = true;
+                  if (c.type === 'default') {
+                    defaultValue = getDefaultValueString(c.default);
+                  }
 
-          if (c.type === 'reference' || c.type === 'foreign key' || c.type === 'foreign_key') {
-            isFKSource = true;
-            const targetTable = getName(
-              c.foreignTable || c.references?.table || c.table
-            );
-            const targetCol = getName(
-              c.foreignColumns?.[0] || c.references?.columns?.[0] || c.columns?.[0]
-            );
-            if (targetTable && targetCol) {
-              relationships.push({
-                sourceTable: tableName,
-                sourceColumn: colName,
-                targetTable,
-                targetColumn: targetCol,
-                constraintName: c.constraintName ? getName(c.constraintName) : undefined,
-                onDelete: c.onDelete ? String(c.onDelete).toUpperCase() : undefined,
-                onUpdate: c.onUpdate ? String(c.onUpdate).toUpperCase() : undefined,
+                  if (c.type === 'reference' || c.type === 'foreign key' || c.type === 'foreign_key') {
+                    isFKSource = true;
+                    const targetTable = getName(
+                      c.foreignTable || c.references?.table || c.table
+                    );
+                    const targetCol = getName(
+                      c.foreignColumns?.[0] || c.references?.columns?.[0] || c.columns?.[0]
+                    );
+                    if (targetTable && targetCol) {
+                      relationships.push({
+                        sourceTable: tableName,
+                        sourceColumn: colName,
+                        targetTable,
+                        targetColumn: targetCol,
+                        constraintName: c.constraintName ? getName(c.constraintName) : undefined,
+                        onDelete: c.onDelete ? String(c.onDelete).toUpperCase() : undefined,
+                        onUpdate: c.onUpdate ? String(c.onUpdate).toUpperCase() : undefined,
+                      });
+                    }
+                  }
+                }
+              }
+
+              columns.push({
+                name: colName,
+                type: getDataTypeString(col.dataType),
+                isPK,
+                isFKSource,
+                isUnique,
+                isNullable,
+                defaultValue,
               });
+
+              if (isUnique && !isPK) {
+                indexes.push({ columns: [colName], isUnique: true, fromConstraint: true });
+              }
             }
           }
         }
-      }
 
-      columns.push({
-        name: colName,
-        type: getDataTypeString(col.dataType),
-        isPK,
-        isFKSource,
-        isUnique,
-        isNullable,
-        defaultValue,
-      });
-
-      if (isUnique && !isPK) {
-        indexes.push({ columns: [colName], isUnique: true, fromConstraint: true });
-      }
-    }
-  }
-}
-
-        // Pass 2: table-level constraints (PK, FK, UNIQUE)
         if (stmt.constraints) {
           for (const constraint of stmt.constraints) {
             const cAny = constraint as any;
@@ -347,7 +326,7 @@ if (stmt.columns) {
               const uqCols: any[] = cAny.columns || [];
               const uqColNames = uqCols.map(getName);
               uqColNames.forEach((name) => {
-                const col = columns.find(c => c.name === name);
+                const col = table.columns.find(c => c.name === name);
                 if (col) col.isUnique = true;
               });
               indexes.push({
@@ -363,27 +342,27 @@ if (stmt.columns) {
         const table: Table = { name: tableName, schema, columns, indexes, comment: extractComment(stmt) };
         tables.push(table);
         tablesByKey.set(tableKey(schema, tableName), table);
-     } else if (stmt.type === 'create index') {
+      } else if (stmt.type === 'create index') {
         pendingIndexStatements.push(stmt);
       } else if (stmt.type === 'alter table') {
         pendingAlterStatements.push(stmt);
       } else if (stmt.type === 'create trigger') {
         pendingTriggerStatements.push(stmt);
-      } else if (stmt.type === 'create function') {
-        // Guardar funciones que retornan TRIGGER para vincularlas con
-        // los triggers que las invoquen (getDataTypeString no aplica aquí
-        // porque `returns` para funciones es un DataTypeDef simple, no
-        // una columna, así que basta con leer `.name`).
+      } else if (stmt.type === 'create function' || stmt.type === 'create procedure') {
+        // CORRECCIÓN: Capturamos bajo la misma condición madre unificada
         const funcName = getName(stmt.name);
         const returns = stmt.returns && 'name' in stmt.returns
           ? String((stmt.returns as any).name).toUpperCase()
           : '';
+
         if (returns === 'TRIGGER' && funcName) {
           triggerFunctions.set(funcName.toLowerCase(), {
             name: funcName,
             code: stmt.code || '',
             returns,
           });
+        } else {
+          pendingProcedureStatements.push(stmt);
         }
       }
     }
@@ -421,24 +400,13 @@ if (stmt.columns) {
     }
   }
 
-  // Helper: given a raw "function()" / "schema.function(args)" string,
-  // find its code among the CREATE FUNCTION ... RETURNS TRIGGER statements
-  // collected earlier. Strips arguments/parens and schema qualification
-  // before doing a case-insensitive lookup.
   const resolveTriggerFunctionCode = (rawFuncName: string): string | undefined => {
-    const bare = rawFuncName.replace(/\(.*$/, '').trim(); // drop "(args)"
+    const bare = rawFuncName.replace(/\(.*$/, '').trim();
     const unqualified = bare.includes('.') ? bare.split('.').pop()! : bare;
     return triggerFunctions.get(unqualified.toLowerCase())?.code;
   };
 
-  // Resolve CREATE TRIGGER statements. pgsql-ast-parser 12.0.2 does not
-  // support the CREATE TRIGGER grammar at all (it throws and the whole
-  // statement is skipped by the outer try/catch), so `pendingTriggerStatements`
-  // will normally stay empty. We fall back to a regex-based parser run
-  // against the full raw SQL so triggers still show up in the diagram.
-  // The AST-based loop below is kept as a forward-compatible path in case
-  // a future version of the library (or a different parser) does populate
-  // `pendingTriggerStatements`.
+  // Fallback Regex-based trigger extractor
   const triggerRegex =
     /CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+(\w+)\s+(BEFORE|AFTER|INSTEAD\s+OF)\s+(INSERT|UPDATE|DELETE)(?:\s+OR\s+(INSERT|UPDATE|DELETE))?(?:\s+OR\s+(INSERT|UPDATE|DELETE))?\s+ON\s+(?:[\w"]+\.)?(\w+)(?:\s+FOR\s+EACH\s+(ROW|STATEMENT))?\s+EXECUTE\s+(?:FUNCTION|PROCEDURE)\s+([\w".]+)\s*\(/gi;
 
@@ -472,55 +440,7 @@ if (stmt.columns) {
     triggersHandledByRegex.add(triggerName.toLowerCase());
   }
 
-  // Resolve CREATE TRIGGER statements that the AST parser *did* manage to
-  // produce (currently a no-op with pgsql-ast-parser 12.0.2, kept for when
-  // the library adds support or is swapped out). Skips anything the regex
-  // fallback above already added, to avoid duplicate trigger entries.
-  for (const stmt of pendingTriggerStatements) {
-    const sAny = stmt as any;
-    const onTable = sAny.table || sAny.on;
-    const schema = onTable?.schema ? getName(onTable.schema) : undefined;
-    const tableName = getName(onTable);
-    const table =
-      tablesByKey.get(tableKey(schema, tableName)) ??
-      [...tablesByKey.values()].find(t => t.name.toLowerCase() === tableName.toLowerCase());
-
-    if (!table) continue;
-
-    const triggerName = sAny.triggerName || sAny.name ? getName(sAny.triggerName || sAny.name) : undefined;
-    if (triggerName && triggersHandledByRegex.has(triggerName.toLowerCase())) continue;
-
-    const timing = sAny.timing ? String(sAny.timing).toUpperCase() : 'UNKNOWN';
-    const events: string[] = [];
-    if (sAny.events) {
-      const evArray = Array.isArray(sAny.events) ? sAny.events : [sAny.events];
-      evArray.forEach((ev: any) => {
-        const evStr = String(ev).toUpperCase();
-        if (evStr && !events.includes(evStr)) events.push(evStr);
-      });
-    }
-    const funcName = sAny.functionCall?.name 
-      ? `${getName(sAny.functionCall.name)}(${(sAny.functionCall.args || []).map((a: any) => String(a)).join(', ')})`
-      : (sAny.functionName ? `${getName(sAny.functionName)}()` : 'UNKNOWN');
-    const forEachRow = Boolean(sAny.forEach === 'row' || sAny.forEachRow);
-    const whenClause = sAny.when ? String(sAny.when) : undefined;
-    const functionCode = resolveTriggerFunctionCode(funcName);
-
-    table.triggers = table.triggers || [];
-    table.triggers.push({
-      name: triggerName,
-      timing,
-      events,
-      onTable: tableName,
-      function: funcName,
-      forEachRow,
-      when: whenClause,
-      functionCode,
-    });
-  }
-
-
-  // Resolve ALTER TABLE ... ADD CONSTRAINT (FK / UNIQUE / PK) statements.
+  // Resolve ALTER TABLE ... ADD CONSTRAINT statements.
   for (const stmt of pendingAlterStatements) {
     const schema = stmt.table?.schema ? getName(stmt.table.schema) : undefined;
     const tableName = getName(stmt.table);
@@ -588,9 +508,91 @@ if (stmt.columns) {
     }
   }
 
+  // Procesar procedimientos almacenados y funciones (CREATE FUNCTION / CREATE PROCEDURE)
+  for (const stmt of pendingProcedureStatements) {
+    const procName = getName(stmt.name);
+    const schema = stmt.name?.schema ? getName(stmt.name.schema) : undefined;
+    
+    // Extraer parámetros
+    const parameters: string[] = [];
+    if (stmt.args && Array.isArray(stmt.args)) {
+      for (const arg of stmt.args) {
+        const paramName = arg.name ? getName(arg.name) : '';
+        const paramType = getDataTypeString(arg.dataType || arg.type || arg);
+        const mode = arg.mode ? String(arg.mode).toUpperCase() : 'IN';
+        if (paramName || paramType !== 'UNKNOWN') {
+          parameters.push(`${mode} ${paramName} ${paramType}`.trim());
+        }
+      }
+    }
+
+    // CORRECCIÓN CARDINAL: Si el AST no tiene tipo de retorno (es un PROCEDURE Puro), asignamos "PROCEDURE"
+    let returnType: string | undefined = 'PROCEDURE';
+    if (stmt.returns) {
+      returnType = getDataTypeString(stmt.returns);
+    }
+
+    const language = stmt.language ? String(stmt.language).toUpperCase() : 'PLPGSQL';
+    const code = stmt.code || stmt.body || '';
+
+    // Analizar el código para detectar operaciones en tablas
+    const affectedTables: ProcedureTableOperation[] = [];
+    const tableNamesLower = new Map(tables.map(t => [t.name.toLowerCase(), t.name]));
+
+    const insertPattern = /INSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)/gi;
+    const updatePattern = /UPDATE\s+([a-zA-Z_][a-zA-Z0-9_]*)/gi;
+    const deletePattern = /DELETE\s+FROM\s+([a-zA-Z_][a-zA-Z0-9_]*)/gi;
+    const selectPattern = /FROM\s+([a-zA-Z_][a-zA-Z0-9_]*)/gi;
+
+    let match;
+
+    while ((match = insertPattern.exec(code)) !== null) {
+      const tableName = match[1];
+      const lowerName = tableName.toLowerCase();
+      if (tableNamesLower.has(lowerName) && !affectedTables.some(t => t.tableName === tableNamesLower.get(lowerName) && t.operationType === 'INSERT')) {
+        affectedTables.push({ tableName: tableNamesLower.get(lowerName)!, operationType: 'INSERT' });
+      }
+    }
+
+    while ((match = updatePattern.exec(code)) !== null) {
+      const tableName = match[1];
+      const lowerName = tableName.toLowerCase();
+      if (tableNamesLower.has(lowerName) && !affectedTables.some(t => t.tableName === tableNamesLower.get(lowerName) && t.operationType === 'UPDATE')) {
+        affectedTables.push({ tableName: tableNamesLower.get(lowerName)!, operationType: 'UPDATE' });
+      }
+    }
+
+    while ((match = deletePattern.exec(code)) !== null) {
+      const tableName = match[1];
+      const lowerName = tableName.toLowerCase();
+      if (tableNamesLower.has(lowerName) && !affectedTables.some(t => t.tableName === tableNamesLower.get(lowerName) && t.operationType === 'DELETE')) {
+        affectedTables.push({ tableName: tableNamesLower.get(lowerName)!, operationType: 'DELETE' });
+      }
+    }
+
+    while ((match = selectPattern.exec(code)) !== null) {
+      const tableName = match[1];
+      const lowerName = tableName.toLowerCase();
+      if (tableNamesLower.has(lowerName) && !affectedTables.some(t => t.tableName === tableNamesLower.get(lowerName))) {
+        affectedTables.push({ tableName: tableNamesLower.get(lowerName)!, operationType: 'SELECT' });
+      }
+    }
+
+    procedures.push({
+      name: procName,
+      schema,
+      parameters: parameters.length > 0 ? parameters : undefined,
+      returnType,
+      language,
+      code,
+      affectedTables,
+      comment: extractComment(stmt),
+    });
+  }
+
   if (tables.length === 0) {
     throw new Error('No se encontraron sentencias CREATE TABLE válidas. Revisa el DDL.');
   }
 
-  return { tables, relationships };
+  return { tables, relationships, procedures };
 }

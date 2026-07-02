@@ -47,7 +47,25 @@ export interface Relationship {
   onUpdate?: string;
 }
 
+// Información sobre qué operación realiza el procedimiento en cada tabla
+export interface ProcedureTableOperation {
+  tableName: string;
+  operationType: 'INSERT' | 'UPDATE' | 'DELETE' | 'SELECT';
+}
+
+export interface Procedure {
+  name: string;
+  schema?: string;
+  parameters?: string[];
+  returnType?: string;
+  language?: string;
+  code?: string;
+  affectedTables: ProcedureTableOperation[]; // Tablas que afecta y qué operación hace
+  comment?: string;
+}
+
 export interface ParsedSchema {
   tables: Table[];
   relationships: Relationship[];
+  procedures: Procedure[];  // ← NUEVO: lista de procedimientos almacenados
 }
