@@ -7,12 +7,13 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import './styles/custom-flow.css';
 import TableNode from './components/TableNode';
+import ProcedureNode from './components/ProcedureNode';
 import CustomEdge from './components/CustomEdge';
 import { parsePostgresSQL, sanitizeId, buildHandleId } from './lib/sqlParser';
-import type { Table } from './lib/types';
+import type { Table, Procedure } from './lib/types';
 import { getLayoutedElements } from './lib/layout';
 
-const nodeTypes = { tableNode: TableNode };
+const nodeTypes = { tableNode: TableNode, procedureNode: ProcedureNode };
 const edgeTypes = { customEdge: CustomEdge };
 
 // Ancho de respaldo si React Flow aún no midió el nodo (antes del primer render)
@@ -160,7 +161,7 @@ export default function Home() {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [error, setError] = useState<string | null>(null);
-  const [stats, setStats] = useState<{ tables: number; relations: number; indexes: number } | null>(null);
+  const [stats, setStats] = useState<{ tables: number; relations: number; indexes: number; procedures: number } | null>(null);
   const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
   const [isTextSelectionMode, setIsTextSelectionMode] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -171,25 +172,47 @@ export default function Home() {
     setSelectedTableId(null);
 
     try {
-      const { tables, relationships } = parsePostgresSQL(sqlInput);
+      const { tables, relationships, procedures } = parsePostgresSQL(sqlInput);
 
-const flowNodes: Node[] = tables.map((table) => {
-  const nodeId = sanitizeId(table.name);
-  return {
-    id: nodeId,
-    type: 'tableNode',
-    data: {
-      label: table.name,
-      nodeId,
-      schema: table.schema,
-      columns: table.columns,
-      indexes: table.indexes,
-      triggers: table.triggers, // ← faltaba: sin esto TableNode nunca ve los triggers
-      comment: table.comment,
-    },
-    position: { x: 0, y: 0 },
-  };
-});
+const flowNodes: Node[] = [
+  // Nodos de tablas
+  ...tables.map((table) => {
+    const nodeId = sanitizeId(table.name);
+    return {
+      id: nodeId,
+      type: 'tableNode',
+      data: {
+        label: table.name,
+        nodeId,
+        schema: table.schema,
+        columns: table.columns,
+        indexes: table.indexes,
+        triggers: table.triggers,
+        comment: table.comment,
+      },
+      position: { x: 0, y: 0 },
+    };
+  }),
+  // Nodos de procedimientos almacenados
+  ...procedures.map((proc) => {
+    const nodeId = sanitizeId(`proc_${proc.name}`);
+    return {
+      id: nodeId,
+      type: 'procedureNode',
+      data: {
+        label: proc.name,
+        nodeId,
+        schema: proc.schema,
+        parameters: proc.parameters,
+        returnType: proc.returnType,
+        language: proc.language,
+        affectedTables: proc.affectedTables,
+        comment: proc.comment,
+      },
+      position: { x: 0, y: 0 },
+    };
+  }),
+];
 
       const edgeCountMap: Record<string, number> = {};
 
@@ -211,92 +234,126 @@ const flowNodes: Node[] = tables.map((table) => {
       const currentTargetCounts: Record<string, number> = {};
       const currentSourceCounts: Record<string, number> = {};
 
-      const flowEdges: Edge[] = relationships.map((rel, i) => {
-        const sourceNodeId = sanitizeId(rel.sourceTable);
-        const targetNodeId = sanitizeId(rel.targetTable);
+      const flowEdges: Edge[] = [
+        // Relaciones entre tablas (Foreign Keys)
+        ...relationships.map((rel, i) => {
+          const sourceNodeId = sanitizeId(rel.sourceTable);
+          const targetNodeId = sanitizeId(rel.targetTable);
 
-        const sHandle = buildHandleId(sourceNodeId, rel.sourceColumn, 'source');
-        const tHandle = buildHandleId(targetNodeId, rel.targetColumn, 'target');
+          const sHandle = buildHandleId(sourceNodeId, rel.sourceColumn, 'source');
+          const tHandle = buildHandleId(targetNodeId, rel.targetColumn, 'target');
 
-        const edgeKey = `${sHandle}->${tHandle}`;
+          const edgeKey = `${sHandle}->${tHandle}`;
 
-        if (edgeCountMap[edgeKey] === undefined) {
-          edgeCountMap[edgeKey] = 0;
-        } else {
-          edgeCountMap[edgeKey]++;
-        }
-
-        const currentCount = edgeCountMap[edgeKey];
-        const offsetSign = currentCount % 2 === 0 ? 1 : -1;
-        const calculatedOffset = Math.ceil(currentCount / 2) * 18 * offsetSign;
-
-        // --- NUEVO: Cálculo de Badge Offset Y (Vertical) ---
-        // Si hay más de una línea apuntando al MISMO destino, desplazamos las etiquetas verticalmente
-        const isTargetCrowded = targetHandleCounts[tHandle] > 1;
-        let targetBadgeOffsetY = 0;
-
-        if (isTargetCrowded) {
-          const currentTIdx = (currentTargetCounts[tHandle] || 0);
-          // Escalonamiento: 0, -22, +22, -44, +44...
-          targetBadgeOffsetY = (currentTIdx % 2 === 0 ? 1 : -1) * Math.ceil((currentTIdx + 1) / 2) * 22;
-          currentTargetCounts[tHandle] = currentTIdx + 1;
-        }
-
-        // Si hay más de una línea saliendo del MISMO origen, desplazamos las etiquetas
-        const isSourceCrowded = sourceHandleCounts[sHandle] > 1;
-        let sourceBadgeOffsetY = 0;
-
-        if (isSourceCrowded) {
-          const currentSIdx = (currentSourceCounts[sHandle] || 0);
-          sourceBadgeOffsetY = (currentSIdx % 2 === 0 ? 1 : -1) * Math.ceil((currentSIdx + 1) / 2) * 22;
-          currentSourceCounts[sHandle] = currentSIdx + 1;
-        }
-        // ---------------------------------------------
-
-        const actionSuffix = [
-          rel.onDelete && `ON DELETE ${rel.onDelete}`,
-          rel.onUpdate && `ON UPDATE ${rel.onUpdate}`,
-        ]
-          .filter(Boolean)
-          .join(' · ');
-
-        const cleanLabel = actionSuffix
-          ? `${rel.sourceColumn} → ${rel.targetColumn}  (${actionSuffix})`
-          : `${rel.sourceColumn} → ${rel.targetColumn}`;
-
-        // Cardinalidad estilo dbdiagram.io: "1" / "0..1" / "*" según si la
-        // columna FK es PK/UNIQUE y si admite NULL.
-        const cardinalityLabels = getCardinalityLabels(tables, rel.sourceTable, rel.sourceColumn);
-
-        return {
-          id: `e-${i}-${sourceNodeId}-${rel.sourceColumn}-${targetNodeId}-${rel.targetColumn}`,
-          source: sourceNodeId,
-          target: targetNodeId,
-          // Valores iniciales (comportamiento "normal": origen -> derecha, destino -> izquierda).
-          // Se recalculan en cada render vía withFloatingHandles/displayEdges.
-          sourceHandle: `${sHandle}__R`,
-          targetHandle: `${tHandle}__L`,
-          type: 'customEdge',
-          animated: true, // Animación de círculo siempre activa
-          style: { stroke: '#4f46e5' },
-          label: cleanLabel,
-          data: {
-            sourceTable: sourceNodeId,
-            targetTable: targetNodeId,
-            offset: calculatedOffset,
-            // Handles base (sin sufijo __L/__R), usados para resolver
-            // dinámicamente el lado correcto según la posición de las tablas.
-            baseSourceHandle: sHandle,
-            baseTargetHandle: tHandle,
-            // Etiquetas de cardinalidad ("1", "0..1", "*") mostradas como
-            // píldoras junto a cada tabla, igual que en dbdiagram.io.
-            cardinalityLabels,
-            // NUEVO: Offsets verticales para evitar superposición de badges
-            sourceBadgeOffsetY,
-            targetBadgeOffsetY,
+          if (edgeCountMap[edgeKey] === undefined) {
+            edgeCountMap[edgeKey] = 0;
+          } else {
+            edgeCountMap[edgeKey]++;
           }
-        };
-      });
+
+          const currentCount = edgeCountMap[edgeKey];
+          const offsetSign = currentCount % 2 === 0 ? 1 : -1;
+          const calculatedOffset = Math.ceil(currentCount / 2) * 18 * offsetSign;
+
+          const isTargetCrowded = targetHandleCounts[tHandle] > 1;
+          let targetBadgeOffsetY = 0;
+
+          if (isTargetCrowded) {
+            const currentTIdx = (currentTargetCounts[tHandle] || 0);
+            targetBadgeOffsetY = (currentTIdx % 2 === 0 ? 1 : -1) * Math.ceil((currentTIdx + 1) / 2) * 22;
+            currentTargetCounts[tHandle] = currentTIdx + 1;
+          }
+
+          const isSourceCrowded = sourceHandleCounts[sHandle] > 1;
+          let sourceBadgeOffsetY = 0;
+
+          if (isSourceCrowded) {
+            const currentSIdx = (currentSourceCounts[sHandle] || 0);
+            sourceBadgeOffsetY = (currentSIdx % 2 === 0 ? 1 : -1) * Math.ceil((currentSIdx + 1) / 2) * 22;
+            currentSourceCounts[sHandle] = currentSIdx + 1;
+          }
+
+          const actionSuffix = [
+            rel.onDelete && `ON DELETE ${rel.onDelete}`,
+            rel.onUpdate && `ON UPDATE ${rel.onUpdate}`,
+          ]
+            .filter(Boolean)
+            .join(' · ');
+
+          const cleanLabel = actionSuffix
+            ? `${rel.sourceColumn} → ${rel.targetColumn}  (${actionSuffix})`
+            : `${rel.sourceColumn} → ${rel.targetColumn}`;
+
+          const cardinalityLabels = getCardinalityLabels(tables, rel.sourceTable, rel.sourceColumn);
+
+          return {
+            id: `e-fk-${i}-${sourceNodeId}-${rel.sourceColumn}-${targetNodeId}-${rel.targetColumn}`,
+            source: sourceNodeId,
+            target: targetNodeId,
+            sourceHandle: `${sHandle}__R`,
+            targetHandle: `${tHandle}__L`,
+            type: 'customEdge',
+            animated: true,
+            style: { stroke: '#4f46e5' },
+            label: cleanLabel,
+            data: {
+              sourceTable: sourceNodeId,
+              targetTable: targetNodeId,
+              offset: calculatedOffset,
+              baseSourceHandle: sHandle,
+              baseTargetHandle: tHandle,
+              cardinalityLabels,
+              sourceBadgeOffsetY,
+              targetBadgeOffsetY,
+              relationType: 'FK',
+            }
+          };
+        }),
+        // Relaciones desde procedimientos hacia tablas afectadas
+        ...procedures.flatMap((proc) => {
+          const procNodeId = sanitizeId(`proc_${proc.name}`);
+          const procEdges: Edge[] = [];
+
+          proc.affectedTables.forEach((op, idx) => {
+            const targetNodeId = sanitizeId(op.tableName);
+            const handleId = buildHandleId(procNodeId, `${op.tableName}-${op.operationType}`, 'source');
+
+            // Color diferente según el tipo de operación
+            const operationColors: Record<string, string> = {
+              INSERT: '#16a34a',  // verde
+              UPDATE: '#2563eb',  // azul
+              DELETE: '#dc2626',  // rojo
+              SELECT: '#9333ea',  // purple
+            };
+
+            procEdges.push({
+              id: `e-proc-${proc.name}-${op.tableName}-${op.operationType}`,
+              source: procNodeId,
+              target: targetNodeId,
+              sourceHandle: `${handleId}__R`,
+              targetHandle: `${buildHandleId(targetNodeId, 'name', 'target')}__L`,
+              type: 'customEdge',
+              animated: true,
+              style: { stroke: operationColors[op.operationType] || '#6b7280' },
+              label: `${op.operationType}`,
+              data: {
+                sourceTable: procNodeId,
+                targetTable: targetNodeId,
+                offset: 0,
+                baseSourceHandle: handleId,
+                baseTargetHandle: buildHandleId(targetNodeId, 'name', 'target'),
+                cardinalityLabels: { source: '1', target: '*' },
+                sourceBadgeOffsetY: 0,
+                targetBadgeOffsetY: 0,
+                relationType: 'PROCEDURE',
+                operationType: op.operationType,
+              }
+            });
+          });
+
+          return procEdges;
+        }),
+      ];
 
       const { nodes: ln, edges: le } = getLayoutedElements(flowNodes, flowEdges, 'LR');
 
@@ -325,7 +382,13 @@ const flowNodes: Node[] = tables.map((table) => {
       setNodes(ln);
       setEdges(layoutedEdges);
       const indexCount = tables.reduce((acc, t) => acc + (t.indexes?.length ?? 0), 0);
-      setStats({ tables: tables.length, relations: relationships.length, indexes: indexCount });
+      const procedureCount = procedures.length;
+      setStats({ 
+        tables: tables.length, 
+        relations: relationships.length, 
+        indexes: indexCount,
+        procedures: procedureCount 
+      });
     } catch (err: any) {
       setError(err.message ?? 'Error inesperado al procesar el código SQL.');
       setNodes([]);

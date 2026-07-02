@@ -1,5 +1,5 @@
 import { parse } from 'pgsql-ast-parser';
-import { ParsedSchema, Table, Column, Relationship, IndexInfo, TriggerInfo } from './types';
+import { ParsedSchema, Table, Column, Relationship, IndexInfo, TriggerInfo, Procedure, ProcedureTableOperation } from './types';
 
 function getName(name: any): string {
   if (!name) return '';
@@ -196,6 +196,7 @@ export function parsePostgresSQL(sql: string): ParsedSchema {
   // regardless of statement order.
   const tablesByKey = new Map<string, Table>();
   const relationships: Relationship[] = [];
+  const procedures: Procedure[] = [];
 
  // CREATE INDEX statements are collected separately because they can
   // appear before or after the CREATE TABLE in the script.
@@ -208,6 +209,8 @@ export function parsePostgresSQL(sql: string): ParsedSchema {
   // function name so lookups from CREATE TRIGGER (regex fallback) match
   // regardless of the casing used in either statement.
   const triggerFunctions = new Map<string, { name: string; code: string; returns: string }>();
+  // Pending procedure/function statements for later processing
+  const pendingProcedureStatements: any[] = [];
 
   const statements = splitStatements(sql);
 
@@ -384,7 +387,13 @@ if (stmt.columns) {
             code: stmt.code || '',
             returns,
           });
+        } else {
+          // Procedimientos almacenados (funciones regulares) - guardarlos para procesar después
+          pendingProcedureStatements.push(stmt);
         }
+      } else if (stmt.type === 'create procedure') {
+        // Soporte explícito para CREATE PROCEDURE (PostgreSQL 11+)
+        pendingProcedureStatements.push(stmt);
       }
     }
   }
@@ -588,9 +597,98 @@ if (stmt.columns) {
     }
   }
 
+  // Procesar procedimientos almacenados y funciones (CREATE FUNCTION / CREATE PROCEDURE)
+  for (const stmt of pendingProcedureStatements) {
+    const procName = getName(stmt.name);
+    const schema = stmt.name?.schema ? getName(stmt.name.schema) : undefined;
+    
+    // Extraer parámetros
+    const parameters: string[] = [];
+    if (stmt.args && Array.isArray(stmt.args)) {
+      for (const arg of stmt.args) {
+        const paramName = arg.name ? getName(arg.name) : '';
+        const paramType = getDataTypeString(arg.dataType || arg.type || arg);
+        const mode = arg.mode ? String(arg.mode).toUpperCase() : 'IN';
+        if (paramName || paramType !== 'UNKNOWN') {
+          parameters.push(`${mode} ${paramName} ${paramType}`.trim());
+        }
+      }
+    }
+
+    // Tipo de retorno
+    let returnType: string | undefined;
+    if (stmt.returns) {
+      returnType = getDataTypeString(stmt.returns);
+    }
+
+    // Lenguaje
+    const language = stmt.language ? String(stmt.language).toUpperCase() : 'SQL';
+
+    // Código del procedimiento
+    const code = stmt.code || stmt.body || '';
+
+    // Analizar el código para detectar operaciones INSERT, UPDATE, DELETE, SELECT en tablas
+    const affectedTables: ProcedureTableOperation[] = [];
+    const tableNamesLower = new Map(tables.map(t => [t.name.toLowerCase(), t.name]));
+
+    // Buscar patrones de operaciones en el código
+    const codeUpper = code.toUpperCase();
+    
+    // Patrones regex para detectar operaciones
+    const insertPattern = /INSERT\s+INTO\s+(\w+)/gi;
+    const updatePattern = /UPDATE\s+(\w+)/gi;
+    const deletePattern = /DELETE\s+FROM\s+(\w+)/gi;
+    const selectPattern = /SELECT\s+.*?\s+FROM\s+(\w+)/gi;
+
+    let match;
+
+    while ((match = insertPattern.exec(code)) !== null) {
+      const tableName = match[1];
+      const lowerName = tableName.toLowerCase();
+      if (tableNamesLower.has(lowerName) && !affectedTables.some(t => t.tableName === tableNamesLower.get(lowerName) && t.operationType === 'INSERT')) {
+        affectedTables.push({ tableName: tableNamesLower.get(lowerName)!, operationType: 'INSERT' });
+      }
+    }
+
+    while ((match = updatePattern.exec(code)) !== null) {
+      const tableName = match[1];
+      const lowerName = tableName.toLowerCase();
+      if (tableNamesLower.has(lowerName) && !affectedTables.some(t => t.tableName === tableNamesLower.get(lowerName) && t.operationType === 'UPDATE')) {
+        affectedTables.push({ tableName: tableNamesLower.get(lowerName)!, operationType: 'UPDATE' });
+      }
+    }
+
+    while ((match = deletePattern.exec(code)) !== null) {
+      const tableName = match[1];
+      const lowerName = tableName.toLowerCase();
+      if (tableNamesLower.has(lowerName) && !affectedTables.some(t => t.tableName === tableNamesLower.get(lowerName) && t.operationType === 'DELETE')) {
+        affectedTables.push({ tableName: tableNamesLower.get(lowerName)!, operationType: 'DELETE' });
+      }
+    }
+
+    while ((match = selectPattern.exec(code)) !== null) {
+      const tableName = match[1];
+      const lowerName = tableName.toLowerCase();
+      if (tableNamesLower.has(lowerName) && !affectedTables.some(t => t.tableName === tableNamesLower.get(lowerName) && t.operationType === 'SELECT')) {
+        affectedTables.push({ tableName: tableNamesLower.get(lowerName)!, operationType: 'SELECT' });
+      }
+    }
+
+    procedures.push({
+      name: procName,
+      schema,
+      parameters: parameters.length > 0 ? parameters : undefined,
+      returnType,
+      language,
+      code,
+      affectedTables,
+      comment: extractComment(stmt),
+    });
+  }
+
   if (tables.length === 0) {
     throw new Error('No se encontraron sentencias CREATE TABLE válidas. Revisa el DDL.');
   }
 
-  return { tables, relationships };
+  return { tables, relationships, procedures };
 }
