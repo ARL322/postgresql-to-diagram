@@ -1,65 +1,978 @@
-import Image from "next/image";
+"use client";
+import { useState, useCallback, useEffect } from 'react';
+import ReactFlow, {
+  Node, Edge, Background, Controls, MiniMap,
+  useNodesState, useEdgesState, useReactFlow, ReactFlowProvider, SelectionMode,
+} from 'reactflow';
+import 'reactflow/dist/style.css';
+import './styles/custom-flow.css';
+import TableNode from './components/TableNode';
+import ProcedureNode from './components/ProcedureNode';
+import CustomEdge from './components/CustomEdge';
+import { parsePostgresSQL, sanitizeId, buildHandleId } from './lib/sqlParser';
+import type { Table, Procedure } from './lib/types';
+import { getLayoutByType, LayoutType } from './lib/layout';
+import FileBrowserModal from './components/FileBrowserModal';
+import { ModeToggle } from '@/components/ModeToggle';
+import { useTheme } from 'next-themes';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+
+
+
+
+
+const nodeTypes = { tableNode: TableNode, procedureNode: ProcedureNode };
+const edgeTypes = { customEdge: CustomEdge };
+
+// Opciones de organización automática (estilo dbdiagram.io) mostradas en la barra lateral
+const LAYOUT_OPTIONS: { value: LayoutType; label: string; icon: string; description: string }[] = [
+  {
+    value: 'LR',
+    label: 'Left-right',
+    icon: '➡️',
+    description:
+      'Organiza las tablas de izquierda a derecha según la dirección de su relación. Ideal para diagramas con largas relaciones, como los flujos de trabajo ETL.',
+  },
+  {
+    value: 'snowflake',
+    label: 'Snowflake',
+    icon: '❄️',
+    description:
+      'Organiza las tablas en forma de copo de nieve, con las tablas más conectadas en el centro. Ideal para diagramas con muchas conexiones, como los almacenes de datos.',
+  },
+  {
+    value: 'compact',
+    label: 'Compact',
+    icon: '▦',
+    description:
+      'Organiza las tablas en un diseño rectangular compacto. Ideal para diagramas con pocas relaciones y tablas.',
+  },
+];
+
+// Ancho de respaldo si React Flow aún no midió el nodo (antes del primer render)
+const FALLBACK_NODE_WIDTH = 320;
+
+// Para las líneas ortogonales (Step / Smoothstep): varias relaciones entre
+// PARES de tablas distintos pueden terminar compartiendo el mismo "tramo
+// vertical" (el codo de la línea), porque por defecto ese codo se calcula
+// en el punto medio entre origen y destino, y muchas relaciones caen en un
+// punto medio muy similar. STEP_LANE_BUCKET agrupa las líneas cuyo punto
+// medio cae en una franja cercana, y STEP_LANE_SPACING separa cada línea
+// del grupo en su propio "carril" para que no se dibujen unas sobre otras.
+const STEP_LANE_BUCKET = 100;
+const STEP_LANE_SPACING = 40;
+
+/**
+ * Simple Floating Edges (adaptado a handles por columna):
+ * en lugar de recalcular geométricamente el punto de intersección sobre el
+ * borde del nodo (como en el ejemplo clásico de node-a-node), aquí cada
+ * columna ya tiene un handle "target" y un handle "source" en AMBOS lados
+ * (ver TableNode.tsx, sufijos __L / __R). Esta función sólo decide, según
+ * la posición X real de los dos nodos, qué lado debe quedar activo en cada
+ * extremo del edge para que la línea nunca tenga que "rodear" la tabla.
+ */
+function getDynamicHandleSides(
+  sourceNode: Node,
+  targetNode: Node
+): { sourceSide: 'L' | 'R'; targetSide: 'L' | 'R' } {
+  const sourceWidth = sourceNode.width ?? FALLBACK_NODE_WIDTH;
+  const targetWidth = targetNode.width ?? FALLBACK_NODE_WIDTH;
+  const sourceCenterX = sourceNode.position.x + sourceWidth / 2;
+  const targetCenterX = targetNode.position.x + targetWidth / 2;
+
+  // Caso normal: la tabla origen está a la izquierda de la tabla destino
+  if (sourceCenterX <= targetCenterX) {
+    return { sourceSide: 'R', targetSide: 'L' };
+  }
+
+  // La tabla origen quedó a la derecha de la tabla destino
+  return { sourceSide: 'L', targetSide: 'R' };
+}
+
+/**
+ * Devuelve el edge con sourceHandle/targetHandle recalculados para el frame
+ * actual, a partir de los handles "base" (sin sufijo) guardados en edge.data.
+ */
+function withFloatingHandles(edge: Edge, nodesById: Map<string, Node>): Edge {
+  const baseSourceHandle = edge.data?.baseSourceHandle;
+  const baseTargetHandle = edge.data?.baseTargetHandle;
+  if (!baseSourceHandle || !baseTargetHandle) return edge;
+
+  const sourceNode = nodesById.get(edge.source);
+  const targetNode = nodesById.get(edge.target);
+  if (!sourceNode || !targetNode) return edge;
+
+  const { sourceSide, targetSide } = getDynamicHandleSides(sourceNode, targetNode);
+  return {
+    ...edge,
+    sourceHandle: `${baseSourceHandle}__${sourceSide}`,
+    targetHandle: `${baseTargetHandle}__${targetSide}`,
+  };
+}
+
+/**
+ * Determina las etiquetas de cardinalidad de una relación
+ */
+function getCardinalityLabels(
+  tables: Table[],
+  sourceTable: string,
+  sourceColumn: string
+): { source: string; target: string } {
+  const table = tables.find((t) => t.name.toLowerCase() === sourceTable.toLowerCase());
+  const col = table?.columns.find((c) => c.name.toLowerCase() === sourceColumn.toLowerCase());
+  const isUniqueOnThisSide = col?.isUniqueColumn === true || col?.isUnique === true;
+  const isNullable = col?.isNullable !== false;
+
+  if (isUniqueOnThisSide) {
+    const label = isNullable ? '0..1' : '1';
+    return { source: label, target: label };
+  }
+
+  return {
+    source: '*',
+    target: isNullable ? '0..1' : '1'
+  };
+}
+
+const DEFAULT_SQL = `-- TABLAS RELACIONADAS (1:N)
+CREATE TABLE clientes (
+    id_cliente SERIAL PRIMARY KEY,
+    nombre VARCHAR(100) NOT NULL,
+    correo VARCHAR(150) UNIQUE NOT NULL,
+    fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE pedidos (
+    id_pedido SERIAL PRIMARY KEY,
+    id_cliente INTEGER NOT NULL,
+    descripcion VARCHAR(200) NOT NULL,
+    total NUMERIC(10,2) NOT NULL,
+    fecha_pedido TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT fk_pedidos_clientes
+        FOREIGN KEY (id_cliente)
+        REFERENCES clientes(id_cliente)
+        ON DELETE CASCADE
+);
+
+-- ==========================================================
+-- ÍNDICES
+-- ==========================================================
+
+CREATE INDEX idx_clientes_correo
+ON clientes(correo);
+
+CREATE INDEX idx_pedidos_cliente
+ON pedidos(id_cliente);
+
+-- ==========================================================
+-- TRIGGER SOBRE LA TABLA clientes
+-- Actualiza automáticamente la fecha_actualizacion
+-- ==========================================================
+
+CREATE OR REPLACE FUNCTION fn_actualizar_fecha_cliente()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    NEW.fecha_actualizacion := CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_clientes_actualizacion
+BEFORE UPDATE
+ON clientes
+FOR EACH ROW
+EXECUTE FUNCTION fn_actualizar_fecha_cliente();
+
+-- ==========================================================
+-- FUNCIÓN
+-- Modifica datos de una de las tablas (clientes)
+-- ==========================================================
+
+CREATE OR REPLACE FUNCTION fn_actualizar_correo_cliente(
+    p_id_cliente INTEGER,
+    p_nuevo_correo VARCHAR(150)
+)
+RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_existe INTEGER;
+    v_fecha_actual TIMESTAMP;
+BEGIN
+
+    -- Obtener la fecha actual
+    v_fecha_actual := CURRENT_TIMESTAMP;
+
+    -- Verificar si el cliente existe
+    SELECT COUNT(*)
+    INTO v_existe
+    FROM clientes
+    WHERE id_cliente = p_id_cliente;
+
+    IF v_existe = 0 THEN
+        RAISE EXCEPTION 'El cliente con ID % no existe', p_id_cliente;
+    END IF;
+
+    -- Actualizar el correo
+    UPDATE clientes
+    SET correo = p_nuevo_correo
+    WHERE id_cliente = p_id_cliente;
+
+END;
+$$;
+-- ==========================================================
+-- PROCEDIMIENTO ALMACENADO
+-- Actualiza y elimina registros de una tabla
+-- ==========================================================
+
+CREATE OR REPLACE PROCEDURE sp_gestionar_pedido(
+    IN p_id_pedido INTEGER,
+    IN p_nuevo_total NUMERIC(10,2),
+    IN p_eliminar BOOLEAN
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_existe_pedido INTEGER;
+    v_fecha_operacion TIMESTAMP;
+    v_total_anterior NUMERIC(10,2);
+    v_mensaje VARCHAR(100);
+BEGIN
+
+    -- Guardar fecha actual
+    v_fecha_operacion := CURRENT_TIMESTAMP;
+
+    -- Verificar si el pedido existe
+    SELECT COUNT(*)
+    INTO v_existe_pedido
+    FROM pedidos
+    WHERE id_pedido = p_id_pedido;
+
+    IF v_existe_pedido = 0 THEN
+        RAISE EXCEPTION 'El pedido % no existe', p_id_pedido;
+    END IF;
+
+    -- Obtener el total actual
+    SELECT total
+    INTO v_total_anterior
+    FROM pedidos
+    WHERE id_pedido = p_id_pedido;
+
+    IF p_eliminar THEN
+
+        DELETE
+        FROM pedidos
+        WHERE id_pedido = p_id_pedido;
+
+        v_mensaje := 'Pedido eliminado';
+
+    ELSE
+
+        UPDATE pedidos
+        SET total = p_nuevo_total
+        WHERE id_pedido = p_id_pedido;
+
+        v_mensaje := 'Pedido actualizado';
+
+    END IF;
+
+    RAISE NOTICE '% - Fecha: %', v_mensaje, v_fecha_operacion;
+
+END;
+$$;
+
+
+`;
+
+function SchemaVisualizer() {
+  const [sqlInput, setSqlInput] = useState(DEFAULT_SQL);
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const { screenToFlowPosition, fitView } = useReactFlow();
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
+  const [error, setError] = useState<string | null>(null);
+  const [stats, setStats] = useState<{ tables: number; relations: number; indexes: number; procedures: number } | null>(null);
+  const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
+  const [isTextSelectionMode, setIsTextSelectionMode] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [edgeType, setEdgeType] = useState<'default' | 'smoothstep' | 'step' | 'straight'>('default');
+  const [layoutType, setLayoutType] = useState<LayoutType>('LR');
+  // Se incrementa cada vez que se aplica manualmente un nuevo layout, para
+  // disparar un fitView confiable una vez que React Flow ya midió los nodos
+  const [layoutVersion, setLayoutVersion] = useState(0);
+
+  const handleGenerate = useCallback(() => {
+    setError(null);
+    setSelectedTableId(null);
+
+    try {
+      const { tables, relationships, procedures } = parsePostgresSQL(sqlInput);
+
+      const flowNodes: Node[] = [
+        // Nodos de tablas
+        ...tables.map((table) => {
+          const nodeId = sanitizeId(table.name);
+          return {
+            id: nodeId,
+            type: 'tableNode',
+            data: {
+              label: table.name,
+              nodeId,
+              schema: table.schema,
+              columns: table.columns,
+              indexes: table.indexes,
+              triggers: table.triggers,
+              comment: table.comment,
+            },
+            position: { x: 0, y: 0 },
+          };
+        }),
+        // Nodos de procedimientos almacenados y funciones
+        ...procedures.map((proc) => {
+          const nodeId = sanitizeId(`proc_${proc.name}`);
+          return {
+            id: nodeId,
+            type: 'procedureNode',
+            data: {
+              label: proc.name,
+              nodeId,
+              schema: proc.schema,
+              parameters: proc.parameters,
+              variables: proc.variables,
+              returnType: proc.returnType,
+              language: proc.language,
+              affectedTables: proc.affectedTables,
+              comment: proc.comment,
+            },
+            position: { x: 0, y: 0 },
+          };
+        }),
+      ];
+
+      const edgeCountMap: Record<string, number> = {};
+      const targetHandleCounts: Record<string, number> = {};
+      const sourceHandleCounts: Record<string, number> = {};
+
+      relationships.forEach((rel) => {
+        const sHandle = buildHandleId(sanitizeId(rel.sourceTable), rel.sourceColumn, 'source');
+        const tHandle = buildHandleId(sanitizeId(rel.targetTable), rel.targetColumn, 'target');
+
+        targetHandleCounts[tHandle] = (targetHandleCounts[tHandle] || 0) + 1;
+        sourceHandleCounts[sHandle] = (sourceHandleCounts[sHandle] || 0) + 1;
+      });
+
+      const currentTargetCounts: Record<string, number> = {};
+      const currentSourceCounts: Record<string, number> = {};
+
+      // Conteo de handles compartidos para las líneas Procedimiento → Tabla.
+      // Todas las operaciones (INSERT/UPDATE/DELETE/SELECT) de un mismo
+      // procedimiento que afectan a la MISMA tabla llegan al mismo punto fijo
+      // (_proc_target) del nodo destino. Sin un desplazamiento por línea, las
+      // curvas que salen de alturas distintas pero convergen en el mismo
+      // punto terminan cruzándose entre sí. Aquí contamos cuántas líneas
+      // comparten ese punto de llegada para poder abrirlas en abanico.
+      const procTargetHandleCounts: Record<string, number> = {};
+      procedures.forEach((proc) => {
+        proc.affectedTables.forEach((op) => {
+          const tHandle = buildHandleId(sanitizeId(op.tableName), '_proc_target', 'target');
+          procTargetHandleCounts[tHandle] = (procTargetHandleCounts[tHandle] || 0) + 1;
+        });
+      });
+      const currentProcTargetCounts: Record<string, number> = {};
+
+      const flowEdges: Edge[] = [
+        // Relaciones entre tablas (Foreign Keys)
+        ...relationships.map((rel, i) => {
+          const sourceNodeId = sanitizeId(rel.sourceTable);
+          const targetNodeId = sanitizeId(rel.targetTable);
+
+          const sHandle = buildHandleId(sourceNodeId, rel.sourceColumn, 'source');
+          const tHandle = buildHandleId(targetNodeId, rel.targetColumn, 'target');
+
+          const edgeKey = `${sHandle}->${tHandle}`;
+
+          if (edgeCountMap[edgeKey] === undefined) {
+            edgeCountMap[edgeKey] = 0;
+          } else {
+            edgeCountMap[edgeKey]++;
+          }
+
+          const currentCount = edgeCountMap[edgeKey];
+          const offsetSign = currentCount % 2 === 0 ? 1 : -1;
+          const calculatedOffset = Math.ceil(currentCount / 2) * 18 * offsetSign;
+
+          const isTargetCrowded = targetHandleCounts[tHandle] > 1;
+          let targetBadgeOffsetY = 0;
+
+          if (isTargetCrowded) {
+            const currentTIdx = (currentTargetCounts[tHandle] || 0);
+            targetBadgeOffsetY = (currentTIdx % 2 === 0 ? 1 : -1) * Math.ceil((currentTIdx + 1) / 2) * 22;
+            currentTargetCounts[tHandle] = currentTIdx + 1;
+          }
+
+          const isSourceCrowded = sourceHandleCounts[sHandle] > 1;
+          let sourceBadgeOffsetY = 0;
+
+          if (isSourceCrowded) {
+            const currentSIdx = (currentSourceCounts[sHandle] || 0);
+            sourceBadgeOffsetY = (currentSIdx % 2 === 0 ? 1 : -1) * Math.ceil((currentSIdx + 1) / 2) * 22;
+            currentSourceCounts[sHandle] = currentSIdx + 1;
+          }
+
+          const actionSuffix = [
+            rel.onDelete && `ON DELETE ${rel.onDelete}`,
+            rel.onUpdate && `ON UPDATE ${rel.onUpdate}`,
+          ]
+            .filter(Boolean)
+            .join(' · ');
+
+          const cleanLabel = actionSuffix
+            ? `${rel.sourceColumn} → ${rel.targetColumn}  (${actionSuffix})`
+            : `${rel.sourceColumn} → ${rel.targetColumn}`;
+
+          const cardinalityLabels = getCardinalityLabels(tables, rel.sourceTable, rel.sourceColumn);
+
+          return {
+            id: `e-fk-${i}-${sourceNodeId}-${rel.sourceColumn}-${targetNodeId}-${rel.targetColumn}`,
+            source: sourceNodeId,
+            target: targetNodeId,
+            sourceHandle: `${sHandle}__R`,
+            targetHandle: `${tHandle}__L`,
+            type: 'customEdge',
+            animated: true,
+            style: { stroke: '#4f46e5' },
+            label: cleanLabel,
+            data: {
+              sourceTable: sourceNodeId,
+              targetTable: targetNodeId,
+              offset: calculatedOffset,
+              baseSourceHandle: sHandle,
+              baseTargetHandle: tHandle,
+              cardinalityLabels,
+              sourceBadgeOffsetY,
+              targetBadgeOffsetY,
+              relationType: 'FK',
+            }
+          };
+        }),
+        // Relaciones desde procedimientos hacia tablas afectadas
+        ...procedures.flatMap((proc) => {
+          const procNodeId = sanitizeId(`proc_${proc.name}`);
+          const procEdges: Edge[] = [];
+
+          proc.affectedTables.forEach((op) => {
+            const targetNodeId = sanitizeId(op.tableName);
+            const handleId = buildHandleId(procNodeId, `${op.tableName}-${op.operationType}`, 'source');
+
+            const operationColors: Record<string, string> = {
+              INSERT: '#16a34a',
+              UPDATE: '#2563eb',
+              DELETE: '#dc2626',
+              SELECT: '#9333ea',
+            };
+
+            const targetHandleId = buildHandleId(targetNodeId, '_proc_target', 'target');
+
+            // Si varias operaciones del procedimiento apuntan a esta misma
+            // tabla, todas comparten el mismo punto de llegada. Repartimos
+            // cada línea alrededor del centro (…, -2, -1, 0, 1, 2, …) según
+            // el orden en que aparecen (que coincide con el orden vertical
+            // en que se dibujan las filas dentro del nodo del procedimiento),
+            // para que las curvas se abran en abanico y queden paralelas en
+            // vez de cruzarse, tal como en dbdiagram.io.
+            const crowdCount = procTargetHandleCounts[targetHandleId] || 1;
+            const crowdIdx = currentProcTargetCounts[targetHandleId] || 0;
+            currentProcTargetCounts[targetHandleId] = crowdIdx + 1;
+
+            const fanStep = crowdIdx - (crowdCount - 1) / 2;
+            const targetBadgeOffsetY = crowdCount > 1 ? fanStep * 26 : 0;
+            const procEdgeOffset = crowdCount > 1 ? fanStep * 20 : 0;
+
+            procEdges.push({
+              id: `e-proc-${proc.name}-${op.tableName}-${op.operationType}`,
+              source: procNodeId,
+              target: targetNodeId,
+              sourceHandle: `${handleId}__R`,
+              targetHandle: `${targetHandleId}__L`,
+              type: 'customEdge',
+              animated: true,
+              style: { stroke: operationColors[op.operationType] || '#6b7280' },
+              label: `${op.operationType}`,
+              data: {
+                sourceTable: procNodeId,
+                targetTable: targetNodeId,
+                offset: procEdgeOffset,
+                baseSourceHandle: handleId,
+                baseTargetHandle: targetHandleId,
+                //cardinalityLabels: { source: '1', target: '*' },
+                cardinalityLabels: { source: '', target: '' },
+                sourceBadgeOffsetY: 0,
+                targetBadgeOffsetY,
+                relationType: 'PROCEDURE',
+                operationType: op.operationType,
+              }
+            });
+          });
+
+          return procEdges;
+        }),
+      ];
+
+      const { nodes: ln, edges: le } = getLayoutByType(flowNodes, flowEdges, layoutType);
+
+      const layoutedEdges = le.map((edge) => {
+        if (!edge.data?.isFocused) return edge;
+
+        const sourceNode = ln.find(n => n.id === edge.source);
+        const targetNode = ln.find(n => n.id === edge.target);
+
+        if (sourceNode && targetNode) {
+          const yDiff = targetNode.position.y - sourceNode.position.y;
+          const dynamicOffset = yDiff > 0 ? 30 : -30;
+
+          return {
+            ...edge,
+            data: {
+              ...edge.data,
+              offset: dynamicOffset,
+            }
+          };
+        }
+
+        return edge;
+      });
+
+      setNodes(ln);
+      setEdges(layoutedEdges);
+      const indexCount = tables.reduce((acc, t) => acc + (t.indexes?.length ?? 0), 0);
+      const procedureCount = procedures.length;
+      
+      // SOLUCIÓN AL ERROR: Eliminada la propiedad redundante 'relationships'
+      setStats({ 
+        tables: tables.length, 
+        relations: relationships.length, 
+        indexes: indexCount,
+        procedures: procedureCount 
+      });
+      // También centra la vista al (re)generar el diagrama desde el SQL
+      setLayoutVersion((v) => v + 1);
+    } catch (err: any) {
+      setError(err.message ?? 'Error inesperado al procesar el código SQL.');
+      setNodes([]);
+      setEdges([]);
+      setStats(null);
+    }
+  }, [sqlInput, setNodes, setEdges, layoutType]);
+
+  // Reorganiza el diagrama YA generado con un nuevo algoritmo de layout,
+  // sin necesidad de volver a parsear el SQL (mantiene tablas/relaciones actuales)
+  const handleLayoutChange = useCallback((newLayout: LayoutType) => {
+    setLayoutType(newLayout);
+    setNodes((currentNodes) => {
+      if (currentNodes.length === 0) return currentNodes;
+      const { nodes: relaidNodes } = getLayoutByType(currentNodes, edges, newLayout);
+      return relaidNodes;
+    });
+    // Dispara el efecto de abajo, que espera a que React Flow ya haya
+    // confirmado y medido las nuevas posiciones antes de centrar la vista
+    setLayoutVersion((v) => v + 1);
+  }, [edges, setNodes]);
+
+  // Centra automáticamente el diagrama cada vez que se cambia de opción de
+  // organización automática (Left-right / Snowflake / Compact). Se usa un
+  // pequeño retraso porque React Flow necesita re-medir los nodos después
+  // de que React confirme las nuevas posiciones; un rAF inmediato a veces
+  // corre demasiado pronto y el encuadre queda desalineado.
+  useEffect(() => {
+    if (layoutVersion === 0) return; // valor por defecto antes de la primera generación/reorganización
+    const timeoutId = window.setTimeout(() => {
+      fitView({ padding: 0.2, duration: 400 });
+    }, 60);
+    return () => window.clearTimeout(timeoutId);
+  }, [layoutVersion, fitView]);
+
+  useEffect(() => {
+    handleGenerate();
+  }, [handleGenerate]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Control' || e.key === 'Meta') {
+        setIsTextSelectionMode(true);
+      }
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Control' || e.key === 'Meta') {
+        setIsTextSelectionMode(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
+
+const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
+  setSelectedTableId(node.id);
+}, []);
+
+const onPaneClick = useCallback(() => {
+  setSelectedTableId(null);
+}, []);
+
+
+
+  const displayNodes = nodes.map((node) => {
+    if (!selectedTableId) return node;
+    const isCurrent = node.id === selectedTableId;
+    const isConnected = edges.some(
+      (e) => (e.source === selectedTableId && e.target === node.id) ||
+             (e.target === selectedTableId && e.source === node.id)
+    );
+
+    return {
+      ...node,
+      className: isCurrent || isConnected ? '' : 'node-dimmed',
+    };
+  });
+
+  const nodesById = new Map(nodes.map((n) => [n.id, n]));
+
+  // Sólo aplica a los tipos de línea ortogonales (Step / Smoothstep), que son
+  // los que sufren de tramos superpuestos cuando varias relaciones distintas
+  // comparten un mismo "corredor" vertical entre las tablas.
+  const stepLaneOffsetByEdgeId: Record<string, number> = {};
+  if (edgeType === 'step' || edgeType === 'smoothstep') {
+    const bucketGroups: Record<number, string[]> = {};
+
+    edges.forEach((edge) => {
+      const sourceNode = nodesById.get(edge.source);
+      const targetNode = nodesById.get(edge.target);
+      if (!sourceNode || !targetNode) return;
+
+      const { sourceSide, targetSide } = getDynamicHandleSides(sourceNode, targetNode);
+      const sourceWidth = sourceNode.width ?? FALLBACK_NODE_WIDTH;
+      const targetWidth = targetNode.width ?? FALLBACK_NODE_WIDTH;
+
+      // Aproximación del punto X real de cada extremo, según de qué lado
+      // (izquierdo/derecho) sale o entra la línea al nodo.
+      const approxSourceX = sourceNode.position.x + (sourceSide === 'R' ? sourceWidth : 0);
+      const approxTargetX = targetNode.position.x + (targetSide === 'R' ? targetWidth : 0);
+      const midpointX = (approxSourceX + approxTargetX) / 2;
+
+      const bucketKey = Math.round(midpointX / STEP_LANE_BUCKET);
+      (bucketGroups[bucketKey] ||= []).push(edge.id);
+    });
+
+    Object.values(bucketGroups).forEach((edgeIds) => {
+      const count = edgeIds.length;
+      if (count <= 1) return;
+      edgeIds.forEach((edgeId, idx) => {
+        stepLaneOffsetByEdgeId[edgeId] = (idx - (count - 1) / 2) * STEP_LANE_SPACING;
+      });
+    });
+  }
+
+const displayEdges = edges.map((edge) => {
+  const floatingEdge = withFloatingHandles(edge, nodesById);
+  
+  const belongsToSelection = selectedTableId 
+    ? (edge.source === selectedTableId || edge.target === selectedTableId) 
+    : false;
+
+  return {
+    ...floatingEdge,
+    animated: belongsToSelection || edge.animated, // ← Mantiene animación original
+    data: {
+      ...floatingEdge.data,
+      isFocused: belongsToSelection,
+      isDimmed: selectedTableId ? !belongsToSelection : false,
+      edgeType: edgeType,           // ← Respeta el tipo de línea seleccionado
+      stepCenterOffset: stepLaneOffsetByEdgeId[edge.id] ?? 0,
+    }
+  };
+});
+
+
+const [filePath, setFilePath] = useState('');
+const [isWatching, setIsWatching] = useState(false);
+const [isBrowserOpen, setIsBrowserOpen] = useState(false);
+
+// Recupera la última ruta usada al cargar la página (F5, recarga, etc.)
+useEffect(() => {
+  const savedPath = localStorage.getItem('sqlFilePath');
+  if (savedPath) setFilePath(savedPath);
+}, []);
+
+// Guarda la ruta cada vez que cambia, para recordarla la próxima vez
+useEffect(() => {
+  if (filePath) {
+    localStorage.setItem('sqlFilePath', filePath);
+  } else {
+    localStorage.removeItem('sqlFilePath');
+  }
+}, [filePath]);
+
+useEffect(() => {
+  if (!isWatching || !filePath) return;
+
+  const es = new EventSource(`/api/watch-sql?path=${encodeURIComponent(filePath)}`);
+  es.onmessage = (e) => {
+    const { content } = JSON.parse(e.data);
+    setSqlInput(content);
+  };
+  es.onerror = () => {
+    es.close();
+    setIsWatching(false);   // ← refleja el estado real en el botón
+  };
+
+  return () => es.close();
+}, [isWatching, filePath]);
+
+  return (
+    <main className="h-screen w-screen flex bg-background overflow-hidden text-foreground antialiased font-sans">
+      <aside
+        className={`flex-shrink-0 flex flex-col gap-3.5 p-5 border-r border-border bg-card shadow-xl z-10 transition-all duration-300 ease-in-out ${
+          isSidebarOpen ? 'w-[390px] opacity-100' : 'w-0 opacity-0 overflow-hidden border-r-0'
+        }`}
+      >
+        <div className="pb-1 border-b border-border">
+          <h1 className="text-lg font-bold tracking-tight text-foreground flex items-center gap-2">
+            <span className="text-2xl">📊</span>
+            <span>Schema <span className="text-indigo-600 dark:text-indigo-400">Visualizer</span></span>
+            <ModeToggle/>
+          </h1>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Ingresa tu código estructurado DDL de PostgreSQL
+          </p>
+        </div>
+
+        <div className="flex gap-2">
+  <Input
+    value={filePath}
+    onChange={(e) => setFilePath(e.target.value)}
+    placeholder="Local File"
+    className="flex-1 h-8 text-xs"
+    disabled={isWatching}
+  />
+  <Button
+    type="button"
+    variant="outline"
+    size="icon"
+    onClick={() => setIsBrowserOpen(true)}
+    disabled={isWatching}
+    className="h-8 w-8 shrink-0"
+    title="Buscar archivo"
+  >
+    📂
+  </Button>
+  <Button
+    type="button"
+    variant={isWatching ? 'secondary' : 'outline'}
+    onClick={() => setIsWatching(!isWatching)}
+    className={`h-8 shrink-0 text-xs ${isWatching ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-900/40 dark:text-emerald-400' : ''}`}
+  >
+    {isWatching ? '🟢 Sincronizado' : '🔗 Vincular'}
+  </Button>
+</div>
+
+<FileBrowserModal
+  isOpen={isBrowserOpen}
+  onClose={() => setIsBrowserOpen(false)}
+  onSelect={(path) => setFilePath(path)}
+/>
+
+        <Textarea
+          className="flex-1 p-3.5 rounded-xl font-mono text-[11px] leading-relaxed resize-none bg-muted/50 placeholder:text-muted-foreground/60 transition-colors"
+          value={sqlInput}
+          onChange={(e) => setSqlInput(e.target.value)}
+          placeholder="-- Pega tus sentencias CREATE TABLE, FUNCTION o PROCEDURE aquí..."
+          spellCheck={false}
+        />
+
+        {error && (
+          <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-lg font-medium animate-pulse dark:bg-rose-950/40 dark:border-rose-900 dark:text-rose-400">
+            ⚠️ {error}
+          </div>
+        )}
+
+        {stats && !error && (
+          <div className="grid grid-cols-4 gap-1 text-center text-[10px] border border-border rounded-xl p-2 bg-muted/50">
+            <div className="p-2 bg-card border border-border rounded-lg shadow-sm">
+              <span className="block text-base font-extrabold text-foreground">{stats.tables}</span> tablas
+            </div>
+            <div className="p-2 bg-card border border-border rounded-lg shadow-sm">
+              <span className="block text-base font-extrabold text-indigo-600 dark:text-indigo-400">{stats.relations}</span> rels
+            </div>
+            <div className="p-2 bg-card border border-border rounded-lg shadow-sm">
+              <span className="block text-base font-extrabold text-amber-600 dark:text-amber-400">{stats.indexes}</span> índices
+            </div>
+            <div className="p-2 bg-card border border-border rounded-lg shadow-sm">
+              <span className="block text-base font-extrabold text-emerald-600 dark:text-emerald-400">{stats.procedures}</span> procs/fns
+            </div>
+          </div>
+        )}
+
+<Button
+  onClick={handleGenerate}
+  className="w-full py-6 rounded-xl font-semibold text-sm transition-all font-sans"
+>
+  Generar Diagrama de Entidades
+</Button>
+
+        <div className="flex flex-col gap-1.5 border-t border-border pt-3">
+          <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+            Tipo de Línea
+          </label>
+          <Select
+            value={edgeType}
+            onValueChange={(v) => setEdgeType(v as 'default' | 'smoothstep' | 'step' | 'straight')}
+          >
+            <SelectTrigger className="w-full text-xs">
+              <SelectValue placeholder="Tipo de línea" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="default">Curva (Bezier)</SelectItem>
+              <SelectItem value="smoothstep">Suave (SmoothStep)</SelectItem>
+              <SelectItem value="step">Escalera (Step)</SelectItem>
+              <SelectItem value="straight">Recta (Straight)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="flex flex-col gap-1.5 border-t border-border pt-3">
+          <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+            Organización Automática
+          </label>
+          <div className="grid grid-cols-1 gap-1.5">
+            {LAYOUT_OPTIONS.map((opt) => (
+              <Button
+                key={opt.value}
+                type="button"
+                variant="outline"
+                onClick={() => handleLayoutChange(opt.value)}
+                className={`h-auto w-full flex-col items-start whitespace-normal text-left px-2.5 py-2 ${
+                  layoutType === opt.value
+                    ? 'bg-indigo-50 border-indigo-300 ring-1 ring-indigo-200 hover:bg-indigo-50 dark:bg-indigo-950/40 dark:border-indigo-800 dark:ring-indigo-900'
+                    : 'bg-card hover:bg-muted/50'
+                }`}
+              >
+                <div className={`flex items-center gap-1.5 font-semibold text-xs ${
+                  layoutType === opt.value ? 'text-indigo-700 dark:text-indigo-400' : 'text-foreground'
+                }`}>
+                  <span>{opt.icon}</span>
+                  <span>{opt.label}</span>
+                </div>
+                <p className="text-[10px] text-muted-foreground font-normal mt-0.5 leading-snug whitespace-normal">
+                  {opt.description}
+                </p>
+              </Button>
+            ))}
+          </div>
+        </div>
+
+        <div className="text-[10px] text-muted-foreground flex flex-col gap-2 border-t border-border pt-3.5 overflow-y-auto max-h-[220px] scrollbar-thin">
+          <span className="font-semibold text-muted-foreground uppercase tracking-wider text-[9px]">💡 Tips de Navegación</span>
+          <p className="text-muted-foreground leading-normal">
+            Haz <strong>clic sobre una tabla o procedimiento</strong> para resaltar sus relaciones directas. Las líneas mantendrán su estilo curvo original. Haz clic en el fondo para restaurar el esquema completo.
+          </p>
+          <p className="text-muted-foreground leading-normal">
+            <strong>Para copiar texto:</strong> Mantén presionada la tecla <kbd className="px-1.5 py-0.5 bg-muted rounded text-[9px] font-mono text-foreground">Ctrl</kbd> (o <kbd className="px-1.5 py-0.5 bg-muted rounded text-[9px] font-mono text-foreground">礼 Cmd</kbd> en Mac) y el cursor cambiará a texto.
+          </p>
+          <p className="text-muted-foreground leading-normal">
+            <strong>Para redirigir una línea:</strong> Haz <strong>doble clic</strong> sobre ella para crear un punto de control arrastrable. Arrástralo para cambiar su dirección y haz doble clic sobre el punto para quitarlo.
+          </p>
+          <p className="text-muted-foreground leading-normal">
+            <strong>Zoom:</strong> Mantén <kbd className="px-1.5 py-0.5 bg-muted rounded text-[9px] font-mono text-foreground">Ctrl</kbd> y usa la rueda del mouse. Sin <kbd className="px-1.5 py-0.5 bg-muted rounded text-[9px] font-mono text-foreground">Ctrl</kbd>, la rueda desplaza el lienzo.
+          </p>
+        </div>
+      </aside>
+
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+        className={`absolute top-1/2 -translate-y-1/2 z-20 h-16 w-8 rounded-l-none shadow-lg hover:shadow-xl hover:bg-indigo-50 hover:border-indigo-300 dark:hover:bg-indigo-950/40 dark:hover:border-indigo-800 transition-all duration-300 group ${
+          isSidebarOpen ? 'left-[390px] -translate-x-1/2 border-l-0' : 'left-0'
+        }`}
+      >
+        <svg
+          className={`w-4 h-4 text-muted-foreground group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-all duration-300 ${isSidebarOpen ? 'rotate-180' : 'rotate-0'}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+        </svg>
+      </Button>
+
+      <div
+        className={`flex-1 h-full relative transition-all duration-300 ${isTextSelectionMode ? 'text-select-mode' : ''}`}
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        {nodes.length > 0 ? (
+          <ReactFlow
+  nodes={displayNodes}
+  edges={displayEdges}
+  onNodesChange={onNodesChange}
+  onEdgesChange={onEdgesChange}
+  nodeTypes={nodeTypes}
+  edgeTypes={edgeTypes}
+  onNodeClick={onNodeClick}
+  onPaneClick={onPaneClick}
+
+  fitView
+  fitViewOptions={{ padding: 0.2 }}
+  className="bg-muted/30 dark:bg-background"
+  proOptions={{ hideAttribution: true }}
+  panOnDrag={isTextSelectionMode ? false : [2]}
+  panOnScroll
+  zoomOnScroll={false}
+  zoomOnDoubleClick={false}
+  zoomActivationKeyCode="Control"
+  nodesDraggable={!isTextSelectionMode}
+  nodesConnectable={!isTextSelectionMode}
+  selectionMode={isTextSelectionMode ? SelectionMode.Full : SelectionMode.Partial}
+>
+            <Background color={isDark ? '#475569' : '#94a3b8'} gap={20} size={1} style={{ opacity: 0.3 }} />
+            <Controls className="!bg-card !shadow-xl !border-border !rounded-xl !p-1 [&_button]:!bg-card [&_button]:!border-border [&_button]:!text-foreground [&_button:hover]:!bg-muted" />
+            <MiniMap
+              className="!bg-card !shadow-xl !border-border !rounded-xl !overflow-hidden"
+              nodeColor={(n) => n.type === 'procedureNode' ? (isDark ? '#064e3b' : '#ecfdf5') : (isDark ? '#312e81' : '#e0e7ff')}
+              nodeStrokeColor={(n) => n.type === 'procedureNode' ? '#059669' : '#a5b4fc'}
+              maskColor={isDark ? 'rgba(0, 0, 0, 0.55)' : 'rgba(15, 23, 42, 0.03)'}
+              zoomable
+              pannable
+            />
+          </ReactFlow>
+        ) : (
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground select-none bg-muted/30 dark:bg-background">
+            <span className="text-6xl">📐</span>
+            <p className="text-base font-semibold text-foreground">El espacio de trabajo está vacío</p>
+          </div>
+        )}
+      </div>
+    </main>
+  );
+}
 
 export default function Home() {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+    <ReactFlowProvider>
+      <SchemaVisualizer />
+    </ReactFlowProvider>
   );
 }
