@@ -947,7 +947,7 @@ useEffect(() => {
   fitViewOptions={{ padding: 0.2 }}
   className="bg-muted/30 dark:bg-background"
   proOptions={{ hideAttribution: true }}
-  panOnDrag={isTextSelectionMode ? false : [2]}
+  panOnDrag={isTextSelectionMode ? false : [1]}
   panOnScroll
   zoomOnScroll={false}
   zoomOnDoubleClick={false}
