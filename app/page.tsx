@@ -13,12 +13,11 @@ import { parsePostgresSQL, sanitizeId, buildHandleId } from './lib/sqlParser';
 import type { Table, Procedure } from './lib/types';
 import { getLayoutByType, LayoutType } from './lib/layout';
 import FileBrowserModal from './components/FileBrowserModal';
-import { ModeToggle } from '@/components/ModeToggle';
+import DiagramToolbar from './components/Diagramtoolbar';
 import { useTheme } from 'next-themes';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 
 
@@ -295,12 +294,15 @@ function SchemaVisualizer() {
   const [sqlInput, setSqlInput] = useState(DEFAULT_SQL);
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const { screenToFlowPosition, fitView } = useReactFlow();
+  const { screenToFlowPosition, fitView, setCenter, getNode } = useReactFlow();
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<{ tables: number; relations: number; indexes: number; procedures: number } | null>(null);
   const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
+  // Id del nodo que el buscador acaba de localizar; se usa para dispararle
+  // un resaltado (pulso) temporal, además del zoom/centrado a su posición.
+  const [searchHighlightId, setSearchHighlightId] = useState<string | null>(null);
   const [isTextSelectionMode, setIsTextSelectionMode] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [edgeType, setEdgeType] = useState<'default' | 'smoothstep' | 'step' | 'straight'>('default');
@@ -632,20 +634,52 @@ const onPaneClick = useCallback(() => {
   setSelectedTableId(null);
 }, []);
 
+// Llamado desde el buscador (SchemaSearch) al elegir una tabla, columna,
+// función o procedimiento: centra la vista sobre el nodo correspondiente,
+// lo selecciona (para resaltar sus relaciones) y además dispara un pulso
+// visual breve para que sea fácil ubicarlo entre muchas tablas.
+const handleFocusNode = useCallback((nodeId: string) => {
+  const node = getNode(nodeId);
+  if (!node) return;
+
+  const width = node.width ?? FALLBACK_NODE_WIDTH;
+  const height = node.height ?? 200;
+  const centerX = node.position.x + width / 2;
+  const centerY = node.position.y + height / 2;
+
+  setCenter(centerX, centerY, { zoom: 1, duration: 600 });
+  setSelectedTableId(node.id);
+  setSearchHighlightId(node.id);
+}, [getNode, setCenter]);
+
+// Quita el pulso visual pasado un momento, para que no quede permanente
+useEffect(() => {
+  if (!searchHighlightId) return;
+  const timeoutId = window.setTimeout(() => setSearchHighlightId(null), 1800);
+  return () => window.clearTimeout(timeoutId);
+}, [searchHighlightId]);
+
 
 
   const displayNodes = nodes.map((node) => {
-    if (!selectedTableId) return node;
+    const isSearchHighlight = node.id === searchHighlightId;
+
+    if (!selectedTableId) {
+      return { ...node, className: isSearchHighlight ? 'node-search-highlight' : '' };
+    }
+
     const isCurrent = node.id === selectedTableId;
     const isConnected = edges.some(
       (e) => (e.source === selectedTableId && e.target === node.id) ||
              (e.target === selectedTableId && e.source === node.id)
     );
 
-    return {
-      ...node,
-      className: isCurrent || isConnected ? '' : 'node-dimmed',
-    };
+    const classes = [
+      isCurrent || isConnected ? '' : 'node-dimmed',
+      isSearchHighlight ? 'node-search-highlight' : '',
+    ].filter(Boolean).join(' ');
+
+    return { ...node, className: classes };
   });
 
   const nodesById = new Map(nodes.map((n) => [n.id, n]));
@@ -709,6 +743,8 @@ const displayEdges = edges.map((edge) => {
 const [filePath, setFilePath] = useState('');
 const [isWatching, setIsWatching] = useState(false);
 const [isBrowserOpen, setIsBrowserOpen] = useState(false);
+// Controla qué pestaña de la fuente de datos está activa en el sidebar
+const [sourceMode, setSourceMode] = useState<'paste' | 'file'>('paste');
 
 // Recupera la última ruta usada al cargar la página (F5, recarga, etc.)
 useEffect(() => {
@@ -752,47 +788,76 @@ useEffect(() => {
           <h1 className="text-lg font-bold tracking-tight text-foreground flex items-center gap-2">
             <span className="text-2xl">📊</span>
             <span>Schema <span className="text-indigo-600 dark:text-indigo-400">Visualizer</span></span>
-            <ModeToggle/>
           </h1>
           <p className="text-xs text-muted-foreground mt-0.5">
             Ingresa tu código estructurado DDL de PostgreSQL
           </p>
         </div>
 
-        <div className="flex gap-2">
-  <Input
-    value={filePath}
-    onChange={(e) => setFilePath(e.target.value)}
-    placeholder="Local File"
-    className="flex-1 h-8 text-xs"
-    disabled={isWatching}
-  />
-  <Button
-    type="button"
-    variant="outline"
-    size="icon"
-    onClick={() => setIsBrowserOpen(true)}
-    disabled={isWatching}
-    className="h-8 w-8 shrink-0"
-    title="Buscar archivo"
-  >
-    📂
-  </Button>
-  <Button
-    type="button"
-    variant={isWatching ? 'secondary' : 'outline'}
-    onClick={() => setIsWatching(!isWatching)}
-    className={`h-8 shrink-0 text-xs ${isWatching ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-900/40 dark:text-emerald-400' : ''}`}
-  >
-    {isWatching ? '🟢 Sincronizado' : '🔗 Vincular'}
-  </Button>
-</div>
+        {/* Pestañas de fuente de datos: pegar SQL directamente o vincular un
+            archivo local. Antes ambos flujos se mostraban siempre juntos;
+            ahora solo se ve el que estás usando. */}
+        <div className="flex border border-border rounded-lg overflow-hidden text-xs shrink-0">
+          <button
+            type="button"
+            onClick={() => setSourceMode('paste')}
+            className={`flex-1 py-1.5 font-medium transition-colors ${
+              sourceMode === 'paste'
+                ? 'bg-muted text-foreground'
+                : 'text-muted-foreground hover:bg-muted/50'
+            }`}
+          >
+            📝 Pegar SQL
+          </button>
+          <button
+            type="button"
+            onClick={() => setSourceMode('file')}
+            className={`flex-1 py-1.5 font-medium transition-colors border-l border-border ${
+              sourceMode === 'file'
+                ? 'bg-muted text-foreground'
+                : 'text-muted-foreground hover:bg-muted/50'
+            }`}
+          >
+            📂 Archivo
+          </button>
+        </div>
 
-<FileBrowserModal
-  isOpen={isBrowserOpen}
-  onClose={() => setIsBrowserOpen(false)}
-  onSelect={(path) => setFilePath(path)}
-/>
+        {sourceMode === 'file' && (
+          <div className="flex gap-2 shrink-0">
+            <Input
+              value={filePath}
+              onChange={(e) => setFilePath(e.target.value)}
+              placeholder="Local File"
+              className="flex-1 h-8 text-xs"
+              disabled={isWatching}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              onClick={() => setIsBrowserOpen(true)}
+              disabled={isWatching}
+              className="h-8 w-8 shrink-0"
+              title="Buscar archivo"
+            >
+              📂
+            </Button>
+            <Button
+              type="button"
+              variant={isWatching ? 'secondary' : 'outline'}
+              onClick={() => setIsWatching(!isWatching)}
+              className={`h-8 shrink-0 text-xs ${isWatching ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-900/40 dark:text-emerald-400' : ''}`}
+            >
+              {isWatching ? '🟢 Sincronizado' : '🔗 Vincular'}
+            </Button>
+          </div>
+        )}
+
+        <FileBrowserModal
+          isOpen={isBrowserOpen}
+          onClose={() => setIsBrowserOpen(false)}
+          onSelect={(path) => setFilePath(path)}
+        />
 
         <Textarea
           className="flex-1 p-3.5 rounded-xl font-mono text-[11px] leading-relaxed resize-none bg-muted/50 placeholder:text-muted-foreground/60 transition-colors"
@@ -831,73 +896,6 @@ useEffect(() => {
 >
   Generar Diagrama de Entidades
 </Button>
-
-        <div className="flex flex-col gap-1.5 border-t border-border pt-3">
-          <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-            Tipo de Línea
-          </label>
-          <Select
-            value={edgeType}
-            onValueChange={(v) => setEdgeType(v as 'default' | 'smoothstep' | 'step' | 'straight')}
-          >
-            <SelectTrigger className="w-full text-xs">
-              <SelectValue placeholder="Tipo de línea" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="default">Curva (Bezier)</SelectItem>
-              <SelectItem value="smoothstep">Suave (SmoothStep)</SelectItem>
-              <SelectItem value="step">Escalera (Step)</SelectItem>
-              <SelectItem value="straight">Recta (Straight)</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex flex-col gap-1.5 border-t border-border pt-3">
-          <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-            Organización Automática
-          </label>
-          <div className="grid grid-cols-1 gap-1.5">
-            {LAYOUT_OPTIONS.map((opt) => (
-              <Button
-                key={opt.value}
-                type="button"
-                variant="outline"
-                onClick={() => handleLayoutChange(opt.value)}
-                className={`h-auto w-full flex-col items-start whitespace-normal text-left px-2.5 py-2 ${
-                  layoutType === opt.value
-                    ? 'bg-indigo-50 border-indigo-300 ring-1 ring-indigo-200 hover:bg-indigo-50 dark:bg-indigo-950/40 dark:border-indigo-800 dark:ring-indigo-900'
-                    : 'bg-card hover:bg-muted/50'
-                }`}
-              >
-                <div className={`flex items-center gap-1.5 font-semibold text-xs ${
-                  layoutType === opt.value ? 'text-indigo-700 dark:text-indigo-400' : 'text-foreground'
-                }`}>
-                  <span>{opt.icon}</span>
-                  <span>{opt.label}</span>
-                </div>
-                <p className="text-[10px] text-muted-foreground font-normal mt-0.5 leading-snug whitespace-normal">
-                  {opt.description}
-                </p>
-              </Button>
-            ))}
-          </div>
-        </div>
-
-        <div className="text-[10px] text-muted-foreground flex flex-col gap-2 border-t border-border pt-3.5 overflow-y-auto max-h-[220px] scrollbar-thin">
-          <span className="font-semibold text-muted-foreground uppercase tracking-wider text-[9px]">💡 Tips de Navegación</span>
-          <p className="text-muted-foreground leading-normal">
-            Haz <strong>clic sobre una tabla o procedimiento</strong> para resaltar sus relaciones directas. Las líneas mantendrán su estilo curvo original. Haz clic en el fondo para restaurar el esquema completo.
-          </p>
-          <p className="text-muted-foreground leading-normal">
-            <strong>Para copiar texto:</strong> Mantén presionada la tecla <kbd className="px-1.5 py-0.5 bg-muted rounded text-[9px] font-mono text-foreground">Ctrl</kbd> (o <kbd className="px-1.5 py-0.5 bg-muted rounded text-[9px] font-mono text-foreground">礼 Cmd</kbd> en Mac) y el cursor cambiará a texto.
-          </p>
-          <p className="text-muted-foreground leading-normal">
-            <strong>Para redirigir una línea:</strong> Haz <strong>doble clic</strong> sobre ella para crear un punto de control arrastrable. Arrástralo para cambiar su dirección y haz doble clic sobre el punto para quitarlo.
-          </p>
-          <p className="text-muted-foreground leading-normal">
-            <strong>Zoom:</strong> Mantén <kbd className="px-1.5 py-0.5 bg-muted rounded text-[9px] font-mono text-foreground">Ctrl</kbd> y usa la rueda del mouse. Sin <kbd className="px-1.5 py-0.5 bg-muted rounded text-[9px] font-mono text-foreground">Ctrl</kbd>, la rueda desplaza el lienzo.
-          </p>
-        </div>
       </aside>
 
       <Button
@@ -923,6 +921,17 @@ useEffect(() => {
         className={`flex-1 h-full relative transition-all duration-300 ${isTextSelectionMode ? 'text-select-mode' : ''}`}
         onContextMenu={(e) => e.preventDefault()}
       >
+        {nodes.length > 0 && (
+          <DiagramToolbar
+            nodes={nodes}
+            onFocusNode={handleFocusNode}
+            edgeType={edgeType}
+            onEdgeTypeChange={setEdgeType}
+            layoutType={layoutType}
+            onLayoutChange={handleLayoutChange}
+            layoutOptions={LAYOUT_OPTIONS}
+          />
+        )}
         {nodes.length > 0 ? (
           <ReactFlow
   nodes={displayNodes}
