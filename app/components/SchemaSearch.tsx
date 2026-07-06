@@ -1,6 +1,9 @@
 "use client";
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { Node } from 'reactflow';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
+import { Badge } from '@/components/ui/badge';
+import { X, KeyRound, Link2, CircleDot, Zap, Gem, Bell, FolderTree, Cog, Puzzle, FileText } from 'lucide-react';
 
 type ItemKind = 'table' | 'procedure' | 'column' | 'parameter' | 'index' | 'trigger';
 
@@ -10,7 +13,10 @@ interface SearchableItem {
   kind: ItemKind;
   label: string;       // texto principal (nombre de tabla, columna, etc.)
   context?: string;    // texto secundario (p.ej. tabla dueña de la columna)
-  icon: string;
+  pk?: boolean;        // columna: es primary key
+  fk?: boolean;        // columna: es fuente de foreign key
+  unique?: boolean;    // índice: es único
+  isProc?: boolean;    // procedimiento vs. función
 }
 
 const KIND_LABELS: Record<ItemKind, string> = {
@@ -22,6 +28,9 @@ const KIND_LABELS: Record<ItemKind, string> = {
   trigger: 'Trigger',
 };
 
+// Orden en el que se agrupan los resultados dentro del dropdown.
+const KIND_ORDER: ItemKind[] = ['table', 'procedure', 'column', 'parameter', 'index', 'trigger'];
+
 // Prioridad de coincidencia: nombres exactos/empiezan-por primero, luego
 // tablas y procedimientos antes que sus columnas/parámetros internos.
 const KIND_WEIGHT: Record<ItemKind, number> = {
@@ -32,6 +41,26 @@ const KIND_WEIGHT: Record<ItemKind, number> = {
   index: 2,
   trigger: 2,
 };
+
+function ItemIcon({ item }: { item: SearchableItem }) {
+  const cls = "size-3.5 shrink-0";
+  switch (item.kind) {
+    case 'table':
+      return <FolderTree className={cls} />;
+    case 'procedure':
+      return item.isProc ? <Cog className={cls} /> : <Puzzle className={cls} />;
+    case 'column':
+      return item.pk ? <KeyRound className={cls} /> : item.fk ? <Link2 className={cls} /> : <CircleDot className={cls} />;
+    case 'index':
+      return item.unique ? <Gem className={cls} /> : <Zap className={cls} />;
+    case 'trigger':
+      return <Bell className={cls} />;
+    case 'parameter':
+      return <FileText className={cls} />;
+    default:
+      return null;
+  }
+}
 
 function buildSearchIndex(nodes: Node[]): SearchableItem[] {
   const result: SearchableItem[] = [];
@@ -64,7 +93,7 @@ function buildSearchIndex(nodes: Node[]): SearchableItem[] {
     if (node.type === 'tableNode') {
       const displayName = node.data.schema ? `${node.data.schema}.${node.data.label}` : node.data.label;
 
-      pushUnique({ id: `table-${node.id}`, nodeId: node.id, kind: 'table', label: displayName, icon: '🗂️' });
+      pushUnique({ id: `table-${node.id}`, nodeId: node.id, kind: 'table', label: displayName });
 
       (node.data.columns ?? []).forEach((col: any) => {
         pushUnique({
@@ -73,8 +102,9 @@ function buildSearchIndex(nodes: Node[]): SearchableItem[] {
           kind: 'column',
           label: col.name,
           context: displayName,
-          icon: col.isPK ? '🔑' : col.isFKSource ? '🔗' : '▫️',
-        });
+          pk: !!col.isPK,
+          fk: !!col.isFKSource,
+        } as SearchableItem);
       });
 
       (node.data.indexes ?? []).forEach((idx: any, i: number) => {
@@ -85,8 +115,8 @@ function buildSearchIndex(nodes: Node[]): SearchableItem[] {
           kind: 'index',
           label: idx.name,
           context: displayName,
-          icon: idx.isUnique ? '💎' : '⚡',
-        });
+          unique: !!idx.isUnique,
+        } as SearchableItem);
       });
 
       (node.data.triggers ?? []).forEach((trg: any, i: number) => {
@@ -97,7 +127,6 @@ function buildSearchIndex(nodes: Node[]): SearchableItem[] {
           kind: 'trigger',
           label: trg.name,
           context: displayName,
-          icon: '🔔',
         });
       });
     } else if (node.type === 'procedureNode') {
@@ -109,8 +138,8 @@ function buildSearchIndex(nodes: Node[]): SearchableItem[] {
         nodeId: node.id,
         kind: 'procedure',
         label: displayName,
-        icon: isProc ? '⚙️' : '🧩',
-      });
+        isProc,
+      } as SearchableItem);
 
       (node.data.parameters ?? []).forEach((param: string, i: number) => {
         pushUnique({
@@ -119,7 +148,6 @@ function buildSearchIndex(nodes: Node[]): SearchableItem[] {
           kind: 'parameter',
           label: param,
           context: displayName,
-          icon: '📝',
         });
       });
     }
@@ -141,13 +169,13 @@ interface FieldProps {
 /**
  * Campo de búsqueda con autocomplete, sin posicionamiento propio: se ubica
  * donde el padre lo coloque (dentro de DiagramToolbar, en una fila flex).
- * Mantiene toda la lógica de índice/filtrado/teclado, para que el atajo
- * Ctrl/Cmd+K y el buscador en sí puedan reutilizarse en cualquier layout.
+ * Mantiene toda la lógica de índice/filtrado, delegando la navegación por
+ * teclado (flechas/Enter/Escape) al Command de shadcn (cmdk), para que el
+ * atajo Ctrl/Cmd+K y el buscador en sí puedan reutilizarse en cualquier layout.
  */
 export function SchemaSearchField({ nodes, onFocusNode, onOpenChange, className }: FieldProps) {
   const [query, setQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(0);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -171,7 +199,16 @@ export function SchemaSearchField({ nodes, onFocusNode, onOpenChange, className 
       .slice(0, 40);
   }, [items, query]);
 
-  useEffect(() => setActiveIndex(0), [query]);
+  // Agrupa los resultados ya ordenados por tipo, preservando su orden interno.
+  const grouped = useMemo(() => {
+    const byKind = new Map<ItemKind, SearchableItem[]>();
+    filtered.forEach((item) => {
+      const bucket = byKind.get(item.kind) ?? [];
+      bucket.push(item);
+      byKind.set(item.kind, bucket);
+    });
+    return KIND_ORDER.map((kind) => ({ kind, items: byKind.get(kind) ?? [] })).filter((g) => g.items.length > 0);
+  }, [filtered]);
 
   const updateOpen = (open: boolean) => {
     setIsOpen(open);
@@ -197,6 +234,10 @@ export function SchemaSearchField({ nodes, onFocusNode, onOpenChange, className 
         inputRef.current?.focus();
         updateOpen(true);
       }
+      if (e.key === 'Escape') {
+        updateOpen(false);
+        inputRef.current?.blur();
+      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -209,75 +250,82 @@ export function SchemaSearchField({ nodes, onFocusNode, onOpenChange, className 
     inputRef.current?.blur();
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (!isOpen || filtered.length === 0) return;
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      setActiveIndex((i) => Math.min(i + 1, filtered.length - 1));
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setActiveIndex((i) => Math.max(i - 1, 0));
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      handleSelect(filtered[activeIndex]);
-    } else if (e.key === 'Escape') {
-      updateOpen(false);
-      inputRef.current?.blur();
-    }
+  const clear = () => {
+    setQuery('');
+    updateOpen(false);
   };
 
   return (
     <div ref={wrapperRef} className={`relative w-[210px] shrink-0 ${className ?? ''}`}>
-      <div className="relative">
-        <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
-          🔍
-        </span>
-        <input
-          ref={inputRef}
-          value={query}
-          onChange={(e) => { setQuery(e.target.value); updateOpen(true); }}
-          onFocus={() => updateOpen(true)}
-          onKeyDown={handleKeyDown}
-          placeholder="Buscar en el esquema…"
-          className="w-full h-8 pl-7 pr-11 rounded-lg border border-border bg-muted/40 text-xs text-foreground placeholder:text-muted-foreground/70 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-shadow"
-        />
-        <kbd className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[9px] font-mono text-muted-foreground bg-muted px-1 py-0.5 rounded border border-border pointer-events-none">
-          ⌘K
-        </kbd>
-      </div>
-
-      {isOpen && query && (
-        <div className="absolute left-0 top-full mt-1.5 w-[360px] max-w-[80vw] max-h-[380px] overflow-y-auto rounded-xl border border-border bg-card shadow-2xl divide-y divide-border z-40">
-          {filtered.length === 0 ? (
-            <div className="px-3.5 py-3 text-xs text-muted-foreground">
-              Sin resultados para “{query}”
-            </div>
-          ) : (
-            filtered.map((item, idx) => (
+      <Command
+        shouldFilter={false}
+        className=""
+      >
+        <div className="relative">
+          <CommandInput
+            ref={inputRef}
+            value={query}
+            onValueChange={(v) => { setQuery(v); updateOpen(true); }}
+            onFocus={() => updateOpen(true)}
+            placeholder="Buscar en el esquema…"
+            className="h-8 py-0 pr-10 text-xs placeholder:text-muted-foreground/70"
+          />
+          <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
+            {query && (
               <button
-                key={item.id}
                 type="button"
-                onClick={() => handleSelect(item)}
-                onMouseEnter={() => setActiveIndex(idx)}
-                className={`w-full flex items-center gap-2 px-3.5 py-2 text-left text-xs transition-colors ${
-                  idx === activeIndex ? 'bg-indigo-50 dark:bg-indigo-950/40' : 'hover:bg-muted/60'
-                }`}
+                onClick={clear}
+                className="rounded p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                title="Limpiar"
               >
-                <span className="text-sm shrink-0">{item.icon}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="font-mono font-semibold text-foreground truncate">{item.label}</div>
-                  {item.context && (
-                    <div className="text-[10px] text-muted-foreground truncate">{item.context}</div>
-                  )}
-                </div>
-                <span className="text-[9px] uppercase tracking-wider text-muted-foreground shrink-0 bg-muted px-1.5 py-0.5 rounded">
-                  {KIND_LABELS[item.kind]}
-                </span>
+                <X className="size-3" />
               </button>
-            ))
-          )}
+            )}
+            <kbd className="hidden sm:inline-flex text-[9px] font-mono text-muted-foreground bg-muted px-1 py-0.5 rounded border border-border pointer-events-none">
+              ⌘K
+            </kbd>
+          </div>
         </div>
-      )}
+
+            {isOpen && query && (
+          <CommandList className="absolute left-0 top-full mt-1.5 w-[360px] max-w-[80vw] max-h-[380px] rounded-xl border border-border bg-card shadow-2xl z-40">
+            <CommandEmpty className="px-3.5 py-3 text-xs text-muted-foreground">
+              Sin resultados para “{query}”
+            </CommandEmpty>
+
+            {grouped.map(({ kind, items: groupItems }) => (
+              <CommandGroup
+                key={kind}
+                heading={KIND_LABELS[kind]}
+                className="[&_[cmdk-group-heading]]:px-3.5 [&_[cmdk-group-heading]]:pt-2.5 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-muted-foreground"
+              >
+                {groupItems.map((item) => (
+                  <CommandItem
+                    key={item.id}
+                    value={item.id}
+                    onSelect={() => handleSelect(item)}
+                    className="flex items-center gap-2 px-3.5 py-2 text-xs cursor-pointer aria-selected:bg-indigo-50 dark:aria-selected:bg-indigo-950/40"
+                  >
+                    <ItemIcon item={item} />
+                    <div className="flex-1 min-w-0">
+                      <div className="font-mono font-semibold text-foreground truncate">{item.label}</div>
+                      {item.context && (
+                        <div className="text-[10px] text-muted-foreground truncate">{item.context}</div>
+                      )}
+                    </div>
+                    <Badge variant="secondary" className="shrink-0 text-[9px] uppercase tracking-wider font-normal">
+                      {KIND_LABELS[item.kind]}
+                    </Badge>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            ))}
+          </CommandList>
+        )}
+
+
+
+      </Command>
     </div>
   );
 }
