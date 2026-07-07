@@ -1,0 +1,124 @@
+diff --git a/app/page.tsx b/app/page.tsx
+index a9d5fb6..33cdb34 100644
+--- a/app/page.tsx
++++ b/app/page.tsx
+@@ -310,10 +310,15 @@ function SchemaVisualizer() {
+   // Se incrementa cada vez que se aplica manualmente un nuevo layout, para
+   // disparar un fitView confiable una vez que React Flow ya midió los nodos
+   const [layoutVersion, setLayoutVersion] = useState(0);
++  // Pestaña de esquema activa: 'ALL' muestra todas las tablas mezcladas (comportamiento
++  // original); cualquier otro valor filtra el canvas para mostrar solo las tablas/
++  // procedimientos que pertenecen a ese schema (ej. 'productos', 'public', etc.)
++  const [activeSchemaTab, setActiveSchemaTab] = useState<string>('ALL');
+ 
+   const handleGenerate = useCallback(() => {
+     setError(null);
+     setSelectedTableId(null);
++    setActiveSchemaTab('ALL');
+ 
+     try {
+       const { tables, relationships, procedures } = parsePostgresSQL(sqlInput);
+@@ -605,6 +610,33 @@ function SchemaVisualizer() {
+     handleGenerate();
+   }, [handleGenerate]);
+ 
++  // Lista de esquemas presentes en el diagrama actual (derivada de los nodos ya
++  // generados). Las tablas/procedimientos sin schema explícito se agrupan bajo
++  // "public", que es el esquema por defecto en PostgreSQL.
++  const schemaTabs = nodes.length
++    ? Array.from(
++        new Set(nodes.map((n) => (n.data?.schema as string | undefined) || 'public'))
++      ).sort((a, b) => a.localeCompare(b))
++    : [];
++
++  // Si el schema seleccionado deja de existir (por ejemplo, se regeneró el SQL
++  // y ya no contiene ese schema), regresa automáticamente a la vista "Todos".
++  useEffect(() => {
++    if (activeSchemaTab !== 'ALL' && !schemaTabs.includes(activeSchemaTab)) {
++      setActiveSchemaTab('ALL');
++    }
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [schemaTabs.join('|')]);
++
++  // Al cambiar de pestaña de esquema, reencuadra la vista para centrar
++  // solo las tablas visibles en ese momento.
++  useEffect(() => {
++    const timeoutId = window.setTimeout(() => {
++      fitView({ padding: 0.2, duration: 300 });
++    }, 60);
++    return () => window.clearTimeout(timeoutId);
++  }, [activeSchemaTab, fitView]);
++
+   useEffect(() => {
+     const handleKeyDown = (e: KeyboardEvent) => {
+       if (e.key === 'Control' || e.key === 'Meta') {
+@@ -739,6 +771,20 @@ const displayEdges = edges.map((edge) => {
+   };
+ });
+ 
++// Filtrado por pestaña de esquema: si hay una pestaña específica activa,
++// solo se muestran las tablas/procedimientos de ese schema, y solo las
++// relaciones cuyos dos extremos sigan visibles (evita líneas "colgando"
++// hacia tablas de otro esquema que quedaron ocultas).
++const schemaFilteredNodes = activeSchemaTab === 'ALL'
++  ? displayNodes
++  : displayNodes.filter((n) => ((n.data?.schema as string | undefined) || 'public') === activeSchemaTab);
++
++const visibleNodeIdSet = new Set(schemaFilteredNodes.map((n) => n.id));
++
++const schemaFilteredEdges = activeSchemaTab === 'ALL'
++  ? displayEdges
++  : displayEdges.filter((e) => visibleNodeIdSet.has(e.source) && visibleNodeIdSet.has(e.target));
++
+ 
+ const [filePath, setFilePath] = useState('');
+ const [isWatching, setIsWatching] = useState(false);
+@@ -932,10 +978,46 @@ useEffect(() => {
+             layoutOptions={LAYOUT_OPTIONS}
+           />
+         )}
++
++        {/* Pestañas de esquema: "Todos" muestra el diagrama completo sin
++            separar; cada pestaña adicional (una por schema detectado en el
++            SQL, ej. "productos") filtra el canvas a solo esas tablas. */}
++        {schemaTabs.length > 1 && (
++          <div className="absolute top-3 left-3 z-30 flex flex-wrap gap-1 max-w-[60%] p-1 rounded-xl bg-card/95 border border-border shadow-lg backdrop-blur-sm">
++            <button
++              type="button"
++              onClick={() => setActiveSchemaTab('ALL')}
++              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
++                activeSchemaTab === 'ALL'
++                  ? 'bg-indigo-600 text-white shadow-sm'
++                  : 'text-muted-foreground hover:bg-muted'
++              }`}
++              title="Ver todas las tablas de todos los esquemas juntas"
++            >
++              🗂️ Todos
++            </button>
++            {schemaTabs.map((schema) => (
++              <button
++                key={schema}
++                type="button"
++                onClick={() => setActiveSchemaTab(schema)}
++                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
++                  activeSchemaTab === schema
++                    ? 'bg-indigo-600 text-white shadow-sm'
++                    : 'text-muted-foreground hover:bg-muted'
++                }`}
++                title={`Ver solo el esquema "${schema}"`}
++              >
++                {schema}
++              </button>
++            ))}
++          </div>
++        )}
++
+         {nodes.length > 0 ? (
+           <ReactFlow
+-  nodes={displayNodes}
+-  edges={displayEdges}
++  nodes={schemaFilteredNodes}
++  edges={schemaFilteredEdges}
+   onNodesChange={onNodesChange}
+   onEdgesChange={onEdgesChange}
+   nodeTypes={nodeTypes}
