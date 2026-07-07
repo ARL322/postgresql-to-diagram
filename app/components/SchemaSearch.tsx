@@ -69,10 +69,22 @@ function buildSearchIndex(nodes: Node[]): SearchableItem[] {
   // con el mismo id (p. ej. un CREATE TABLE duplicado en el SQL), nos
   // quedamos solo con la primera aparición para no generar entradas
   // repetidas en el buscador.
-  const seenNodeIds = new Set<string>();
+  //
+  // OJO: deduplicar únicamente por node.id es incorrecto cuando dos tablas
+  // distintas comparten nombre pero viven en esquemas diferentes (p. ej.
+  // productos.unidad_medida y vucem.unidad_medida) y el generador de nodos
+  // no incluyó el esquema al construir el id. En ese caso ambos nodos caen
+  // con el mismo node.id y, sin esta corrección, solo el primero aparecería
+  // en el buscador. Por eso la clave de deduplicación combina también el
+  // esquema y el nombre visible (schema.label), para no descartar tablas
+  // realmente distintas.
+  const seenKeys = new Set<string>();
   const dedupedNodes = nodes.filter((node) => {
-    if (seenNodeIds.has(node.id)) return false;
-    seenNodeIds.add(node.id);
+    const schema = node.data?.schema ? String(node.data.schema).toLowerCase() : '';
+    const label = node.data?.label ? String(node.data.label).toLowerCase() : '';
+    const key = `${node.type}::${schema}.${label}::${node.id}`;
+    if (seenKeys.has(key)) return false;
+    seenKeys.add(key);
     return true;
   });
 
