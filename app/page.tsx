@@ -18,6 +18,7 @@ import { useTheme } from 'next-themes';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 
 
@@ -979,38 +980,38 @@ useEffect(() => {
           />
         )}
 
-        {/* Pestañas de esquema: "Todos" muestra el diagrama completo sin
-            separar; cada pestaña adicional (una por schema detectado en el
-            SQL, ej. "productos") filtra el canvas a solo esas tablas. */}
+        {/* Selector de esquema: "Todos los esquemas" muestra el diagrama
+            completo sin separar; cada opción adicional (una por schema
+            detectado en el SQL, ej. "productos") filtra el canvas a solo
+            esas tablas. Reemplaza las pestañas por botones para no ocupar
+            tanto espacio horizontal cuando hay muchos esquemas. */}
         {schemaTabs.length > 1 && (
-          <div className="absolute top-3 left-3 z-30 flex flex-wrap gap-1 max-w-[60%] p-1 rounded-xl bg-card/95 border border-border shadow-lg backdrop-blur-sm">
-            <button
-              type="button"
-              onClick={() => setActiveSchemaTab('ALL')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                activeSchemaTab === 'ALL'
-                  ? 'bg-indigo-600 text-white shadow-sm'
-                  : 'text-muted-foreground hover:bg-muted'
-              }`}
-              title="Ver todas las tablas de todos los esquemas juntas"
-            >
-              🗂️ Todos
-            </button>
-            {schemaTabs.map((schema) => (
-              <button
-                key={schema}
-                type="button"
-                onClick={() => setActiveSchemaTab(schema)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                  activeSchemaTab === schema
-                    ? 'bg-indigo-600 text-white shadow-sm'
-                    : 'text-muted-foreground hover:bg-muted'
-                }`}
-                title={`Ver solo el esquema "${schema}"`}
+          <div className="absolute top-3 left-3 z-30">
+           <Select
+  value={activeSchemaTab}
+  onValueChange={(value) => {
+    if (value !== null) {
+      setActiveSchemaTab(value);
+    }
+  }}
+>
+              <SelectTrigger
+                className="h-9 min-w-[180px] rounded-xl bg-card/95 border-border shadow-lg backdrop-blur-sm text-xs font-semibold gap-2"
+                title="Filtrar el diagrama por esquema"
               >
-                {schema}
-              </button>
-            ))}
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL" className="text-xs font-semibold">
+                  🗂️ Todos los esquemas
+                </SelectItem>
+                {schemaTabs.map((schema) => (
+                  <SelectItem key={schema} value={schema} className="text-xs font-semibold">
+                    {schema}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         )}
 
