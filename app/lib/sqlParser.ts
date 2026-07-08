@@ -658,14 +658,24 @@ export function parsePostgresSQL(sql: string): ParsedSchema {
           : '';
 
         if (returns === 'TRIGGER' && funcName) {
+          // Guardamos el código para que el TRIGGER que la use pueda
+          // mostrarlo embebido (comportamiento original).
           triggerFunctions.set(funcName.toLowerCase(), {
             name: funcName,
             code: stmt.code || '',
             returns,
           });
-        } else {
-          pendingProcedureStatements.push(stmt);
         }
+
+        // FIX: antes, las funciones con RETURNS TRIGGER solo se guardaban en
+        // `triggerFunctions` y nunca llegaban aquí, por lo que jamás
+        // aparecían como nodo propio en el diagrama (a diferencia de una
+        // función/procedimiento "normal"). Ahora TODA función o
+        // procedimiento -- incluidas las de trigger -- se agrega también
+        // a `pendingProcedureStatements`, para que se muestre como su
+        // propia caja de "procs/fns", igual que fn_actualizar_correo_cliente
+        // o sp_gestionar_pedido en el otro script.
+        pendingProcedureStatements.push(stmt);
       }
     }
   }
