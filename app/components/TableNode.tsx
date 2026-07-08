@@ -20,7 +20,7 @@ export default function TableNode({ data }: NodeProps<TableNodeData>) {
 
   return (
     <div
-      className="bg-card rounded-md shadow-sm border border-border min-w-[280px]"
+      className="bg-card rounded-md shadow-sm border border-border w-[280px]"
     >
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 bg-muted/50 border-b border-border rounded-t-md">
@@ -136,11 +136,15 @@ export default function TableNode({ data }: NodeProps<TableNodeData>) {
               <div className="text-xs font-medium text-muted-foreground mb-1">
                 Indexes ({allIndexes.length})
               </div>
-              <div className="flex flex-col gap-1 max-h-[120px] overflow-y-auto mb-2">
+              <div className="flex flex-col gap-1 max-h-[120px] overflow-y-auto overflow-x-auto mb-2">
                 {allIndexes.map((idx, i) => (
-                  <div key={i} className="flex items-center gap-1.5 text-xs">
-                    <span className="text-muted-foreground">{idx.isUnique ? '💎' : '⚡'}</span>
-                    <span className="font-mono text-foreground/80 truncate">{idx.name}</span>
+                  <div
+                    key={i}
+                    className="flex items-center gap-1.5 text-xs whitespace-nowrap w-max"
+                    title={`${idx.name} (${idx.columns.join(', ')})`}
+                  >
+                    <span className="text-muted-foreground flex-shrink-0">{idx.isUnique ? '💎' : '⚡'}</span>
+                    <span className="font-mono text-foreground/80 flex-shrink-0">{idx.name}</span>
                     <span className="text-muted-foreground font-mono text-xs">({idx.columns.join(', ')})</span>
                   </div>
                 ))}
