@@ -16,7 +16,6 @@ import FileBrowserModal from './components/FileBrowserModal';
 import DiagramToolbar from './components/Diagramtoolbar';
 import { useTheme } from 'next-themes';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
@@ -787,31 +786,41 @@ const schemaFilteredEdges = activeSchemaTab === 'ALL'
   : displayEdges.filter((e) => visibleNodeIdSet.has(e.source) && visibleNodeIdSet.has(e.target));
 
 
-const [filePath, setFilePath] = useState('');
+// Ahora se soportan múltiples archivos .sql vinculados a la vez.
+const [filePaths, setFilePaths] = useState<string[]>([]);
 const [isWatching, setIsWatching] = useState(false);
 const [isBrowserOpen, setIsBrowserOpen] = useState(false);
 // Controla qué pestaña de la fuente de datos está activa en el sidebar
 const [sourceMode, setSourceMode] = useState<'paste' | 'file'>('paste');
 
-// Recupera la última ruta usada al cargar la página (F5, recarga, etc.)
+// Recupera las últimas rutas usadas al cargar la página (F5, recarga, etc.)
 useEffect(() => {
-  const savedPath = localStorage.getItem('sqlFilePath');
-  if (savedPath) setFilePath(savedPath);
+  const saved = localStorage.getItem('sqlFilePaths');
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) setFilePaths(parsed);
+    } catch {
+      // valor corrupto o del formato antiguo (una sola ruta en texto plano)
+      localStorage.removeItem('sqlFilePaths');
+    }
+  }
 }, []);
 
-// Guarda la ruta cada vez que cambia, para recordarla la próxima vez
+// Guarda las rutas cada vez que cambian, para recordarlas la próxima vez
 useEffect(() => {
-  if (filePath) {
-    localStorage.setItem('sqlFilePath', filePath);
+  if (filePaths.length > 0) {
+    localStorage.setItem('sqlFilePaths', JSON.stringify(filePaths));
   } else {
-    localStorage.removeItem('sqlFilePath');
+    localStorage.removeItem('sqlFilePaths');
   }
-}, [filePath]);
+}, [filePaths]);
 
 useEffect(() => {
-  if (!isWatching || !filePath) return;
+  if (!isWatching || filePaths.length === 0) return;
 
-  const es = new EventSource(`/api/watch-sql?path=${encodeURIComponent(filePath)}`);
+  const query = filePaths.map((p) => `path=${encodeURIComponent(p)}`).join('&');
+  const es = new EventSource(`/api/watch-sql?${query}`);
   es.onmessage = (e) => {
     const { content } = JSON.parse(e.data);
     setSqlInput(content);
@@ -822,7 +831,13 @@ useEffect(() => {
   };
 
   return () => es.close();
-}, [isWatching, filePath]);
+}, [isWatching, filePaths]);
+
+// Quita un archivo de la lista de vinculados; si se está sincronizando,
+// el efecto de arriba reabrirá el stream automáticamente con la lista nueva.
+const removeFilePath = (pathToRemove: string) => {
+  setFilePaths((prev) => prev.filter((p) => p !== pathToRemove));
+};
 
   return (
     <main className="h-screen w-screen flex bg-background overflow-hidden text-foreground antialiased font-sans">
@@ -870,40 +885,63 @@ useEffect(() => {
         </div>
 
         {sourceMode === 'file' && (
-          <div className="flex gap-2 shrink-0">
-            <Input
-              value={filePath}
-              onChange={(e) => setFilePath(e.target.value)}
-              placeholder="Local File"
-              className="flex-1 h-8 text-xs"
-              disabled={isWatching}
-            />
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              onClick={() => setIsBrowserOpen(true)}
-              disabled={isWatching}
-              className="h-8 w-8 shrink-0"
-              title="Buscar archivo"
-            >
-              📂
-            </Button>
-            <Button
-              type="button"
-              variant={isWatching ? 'secondary' : 'outline'}
-              onClick={() => setIsWatching(!isWatching)}
-              className={`h-8 shrink-0 text-xs ${isWatching ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-900/40 dark:text-emerald-400' : ''}`}
-            >
-              {isWatching ? '🟢 Sincronizado' : '🔗 Vincular'}
-            </Button>
+          <div className="flex flex-col gap-2 shrink-0">
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsBrowserOpen(true)}
+                disabled={isWatching}
+                className="flex-1 h-8 text-xs justify-start gap-1.5"
+              >
+                📂 {filePaths.length > 0 ? 'Editar selección de archivos' : 'Seleccionar archivos .sql'}
+              </Button>
+              <Button
+                type="button"
+                variant={isWatching ? 'secondary' : 'outline'}
+                onClick={() => setIsWatching(!isWatching)}
+                disabled={filePaths.length === 0}
+                className={`h-8 shrink-0 text-xs ${isWatching ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-900/40 dark:text-emerald-400' : ''}`}
+              >
+                {isWatching ? '🟢 Sincronizado' : '🔗 Vincular'}
+              </Button>
+            </div>
+
+            {filePaths.length > 0 && (
+              <ul className="flex flex-col gap-1 max-h-32 overflow-y-auto border border-border rounded-lg p-1.5 bg-muted/30">
+                {filePaths.map((p) => (
+                  <li
+                    key={p}
+                    className="flex items-center justify-between gap-2 text-[11px] px-2 py-1 rounded-md bg-card border border-border"
+                  >
+                    <span className="truncate" title={p}>📄 {p}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeFilePath(p)}
+                      disabled={isWatching}
+                      className="shrink-0 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400 disabled:opacity-30 disabled:cursor-not-allowed"
+                      title="Quitar archivo"
+                    >
+                      ✕
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {filePaths.length === 0 && (
+              <p className="text-[11px] text-muted-foreground px-0.5">
+                Ningún archivo seleccionado todavía.
+              </p>
+            )}
           </div>
         )}
 
         <FileBrowserModal
           isOpen={isBrowserOpen}
           onClose={() => setIsBrowserOpen(false)}
-          onSelect={(path) => setFilePath(path)}
+          initialSelected={filePaths}
+          onSelect={(paths) => setFilePaths(paths)}
         />
 
         <Textarea
