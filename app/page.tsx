@@ -318,7 +318,13 @@ function SchemaVisualizer() {
   const handleGenerate = useCallback(() => {
     setError(null);
     setSelectedTableId(null);
-    setActiveSchemaTab('ALL');
+    // NOTA: ya no forzamos aquí `setActiveSchemaTab('ALL')`. Antes esto se
+    // ejecutaba en cada regeneración (incluida la sincronización automática
+    // del archivo .sql vía /api/watch-sql), lo que reseteaba la pestaña de
+    // schema seleccionada cada vez que el archivo cambiaba en disco.
+    // El efecto de más abajo (basado en `schemaTabs`) ya se encarga de volver
+    // a 'ALL' únicamente si el schema activo deja de existir en el SQL nuevo,
+    // que es el único caso en el que de verdad hace falta resetear.
 
     try {
       const { tables, relationships, procedures } = parsePostgresSQL(sqlInput);
