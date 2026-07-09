@@ -1,5 +1,5 @@
 "use client";
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import ReactFlow, {
   Node, Edge, Background, Controls, MiniMap,
   useNodesState, useEdgesState, useReactFlow, ReactFlowProvider, SelectionMode,
@@ -314,6 +314,12 @@ function SchemaVisualizer() {
   // original); cualquier otro valor filtra el canvas para mostrar solo las tablas/
   // procedimientos que pertenecen a ese schema (ej. 'productos', 'public', etc.)
   const [activeSchemaTab, setActiveSchemaTab] = useState<string>('ALL');
+  // Bandera para distinguir POR QUÉ se está regenerando el diagrama:
+  // - true  -> el cambio vino del watcher del archivo .sql sincronizado
+  //            (se refrescan los datos, pero NO se toca el zoom/posición)
+  // - false -> generación manual (botón "Generar Diagrama" o cambio de
+  //            layout), donde sí queremos recentrar la vista como antes.
+  const isAutoSyncRef = useRef(false);
 
   const handleGenerate = useCallback(() => {
     setError(null);
@@ -575,8 +581,15 @@ function SchemaVisualizer() {
         indexes: indexCount,
         procedures: procedureCount 
       });
-      // También centra la vista al (re)generar el diagrama desde el SQL
-      setLayoutVersion((v) => v + 1);
+      // Solo centramos la vista (fitView) cuando la generación fue disparada
+      // manualmente (botón "Generar Diagrama" o carga inicial). Si el cambio
+      // vino del watcher del archivo .sql sincronizado, mantenemos el zoom
+      // y la posición donde el usuario los dejó; los datos nuevos igual se
+      // ven reflejados porque setNodes/setEdges ya se ejecutó arriba.
+      if (!isAutoSyncRef.current) {
+        setLayoutVersion((v) => v + 1);
+      }
+      isAutoSyncRef.current = false;
     } catch (err: any) {
       setError(err.message ?? 'Error inesperado al procesar el código SQL.');
       setNodes([]);
@@ -829,6 +842,10 @@ useEffect(() => {
   const es = new EventSource(`/api/watch-sql?${query}`);
   es.onmessage = (e) => {
     const { content } = JSON.parse(e.data);
+    // Esta actualización viene del archivo .sql en disco (guardado del
+    // usuario), no de un clic manual en "Generar Diagrama": marcamos la
+    // bandera para que handleGenerate no dispare fitView esta vez.
+    isAutoSyncRef.current = true;
     setSqlInput(content);
   };
   es.onerror = () => {
